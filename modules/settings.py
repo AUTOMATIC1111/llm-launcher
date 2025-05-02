@@ -112,6 +112,8 @@ class SettingsUi:
         self.result = None
         self.submit = None
 
+        self.opts.load(config_filename)
+
     def create_setting_component(self, key, is_quicksettings=False):
         def fun():
             return self.opts.data[key] if key in self.opts.data else self.opts.templates[key].default
