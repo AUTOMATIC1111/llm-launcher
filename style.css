@@ -3,3 +3,7 @@
     flex: 0;
     min-width: 2.5em;
 }
+
+.model-info p{
+    margin: 0;
+}
