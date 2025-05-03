@@ -11,7 +11,7 @@ import signal
 
 import gguf_parser
 
-from modules import shared, errors, llamacpp_output_reader
+from modules import shared, errors, llamacpp_output_reader, templating
 
 
 def nvidia_smi():
@@ -34,6 +34,8 @@ class LlamaServerLauncher:
         self.model_path = None
         self.model_arch = None
         self.model_chat_template = None
+        self.model_chat_template_example = None
+        self.model_chat_template_markdown = None
         self.model_tensor_info = None
         self.model_size = None
         self.model_param_count = None
@@ -65,10 +67,58 @@ Server: {self.build_info}
             return '|' + '|'.join(str(x) for x in cells) + '|'
 
         self.model_arch = parser.metadata.get('general.architecture', '*unknown*')
-        self.model_chat_template = "```\n" + parser.metadata.get('tokenizer.chat_template', '-') + "```\n"
+        self.model_chat_template = parser.metadata.get('tokenizer.chat_template', '')
         self.model_tensor_info = "| name | type | size |\n|---|---|---|\n" + "\n".join(tensor_info(x) for x in parser.tensors_info)
         self.model_size = os.path.getsize(self.model_path)
         self.model_param_count = sum(math.prod(x.get('dimensions', [0])) for x in parser.tensors_info)
+
+        self.write_down_template(parser)
+
+    def prepare_commandline_options(self):
+        permodel_opts_all = [x.partition(':') for x in shared.opts.llamacpp_cmdline_permodel.split('\n')]
+        permodel_opts = next((opts for model, _, opts in permodel_opts_all if model and model.lower() in self.model_name.lower()), '')
+
+        cmd = [shared.opts.llamacpp_exe, "-m", self.model_path] + shlex.split(permodel_opts.strip()) + shlex.split(shared.opts.llamacpp_cmdline.strip())
+
+        if shared.opts.llamacpp_port:
+            cmd += ["--port", shared.opts.llamacpp_port]
+
+        if shared.opts.llamacpp_host:
+            cmd += ["--host", shared.opts.llamacpp_host]
+
+        return cmd
+
+    def write_down_template(self, parser):
+        self.model_chat_template_example = ''
+
+        if not self.model_chat_template:
+            self.model_chat_template_markdown = "*Chat ttemplate missing!*"
+            return
+
+        tokens = parser.metadata.get('tokenizer.ggml.tokens', [])
+
+        def find_token(token_id):
+            return "" if token_id < 0 or token_id >= len(tokens) else tokens[token_id]
+
+        template_vars = {
+            'messages': [
+                {"role": "user", "content": "What is 1+1?"},
+                {"role": "assistant", "content": "It's 2."},
+                {"role": "user", "content": "Thank you."},
+                {"role": "assistant", "content": "No problem."},
+            ],
+            "bos_token": find_token(parser.metadata.get('tokenizer.ggml.bos_token_id', -1)),
+            "eos_token": find_token(parser.metadata.get('tokenizer.ggml.eos_token_id', -1)),
+            "pad_token": find_token(parser.metadata.get('tokenizer.ggml.unknown_token_id', -1)),
+            "unk_token": find_token(parser.metadata.get('tokenizer.ggml.padding_token_id', -1)),
+        }
+
+        try:
+            rendered = templating.render(self.model_chat_template, template_vars)
+            self.model_chat_template_example = rendered
+            self.model_chat_template_markdown = "Example:\n```\n" + str(rendered) + "\n```\n\nFull chat template:\n```\n" + str(self.model_chat_template) + "\n```"
+        except Exception as e:
+            self.model_chat_template_markdown = f"Error rendering example: {e}\n\nFull chat template:\n```\n" + str(self.model_chat_template) + "\n```"
 
     def stop_server(self):
         if self.server_process and self.server_process.poll() is None:
@@ -97,17 +147,7 @@ Server: {self.build_info}
             self.server_status = 'Starting server...'
             yield self.server_status
 
-            permodel_opts_all = [x.partition(':') for x in shared.opts.llamacpp_cmdline_permodel.split('\n')]
-            permodel_opts = next((opts for model, _, opts in permodel_opts_all if model and model.lower() in self.model_name.lower()), '')
-
-            cmd = [shared.opts.llamacpp_exe, "-m", self.model_path] + shlex.split(permodel_opts.strip()) + shlex.split(shared.opts.llamacpp_cmdline.strip())
-
-            if shared.opts.llamacpp_port:
-                cmd += ["--port", shared.opts.llamacpp_port]
-
-            if shared.opts.llamacpp_host:
-                cmd += ["--host", shared.opts.llamacpp_host]
-
+            cmd = self.prepare_commandline_options()
             self.commandline = shlex.join(cmd)
 
             self.server_process = subprocess.Popen(
@@ -236,7 +276,7 @@ Server: {self.build_info}
             demo.load(fn=self.load_status, outputs=[status])
 
             init_fields = dict(
-                fn=lambda: [self.model_info(), '```\n' + self.startup_log + '\n```', self.model_chat_template, self.model_tensor_info, '```\n' + self.commandline + '\n```'],
+                fn=lambda: [self.model_info(), '```\n' + self.startup_log + '\n```', self.model_chat_template_markdown, self.model_tensor_info, '```\n' + self.commandline + '\n```'],
                 outputs=[model_info, startup_log, chat_template, tensor_info, commandline]
             )
 
