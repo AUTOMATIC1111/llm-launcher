@@ -131,8 +131,8 @@ Server: {self.build_info or '*Loading...*'}
         except Exception as e:
             self.model_chat_template_markdown = f"Error rendering example: {e}\n\nFull chat template:\n```\n" + str(self.model_chat_template) + "\n```"
 
-    def stop_server(self):
-        if self.busy:
+    def stop_server(self, skip_check=False):
+        if self.busy and not skip_check:
             gr.Warning('Already working!')
             return
 
@@ -169,7 +169,7 @@ Server: {self.build_info or '*Loading...*'}
         try:
             self.read_model_info()
 
-            for _ in self.stop_server():
+            for _ in self.stop_server(skip_check=True):
                 pass
 
             self.server_status = 'Starting server...'
@@ -228,15 +228,15 @@ Server: {self.build_info or '*Loading...*'}
 
             m = re.search(r'build: ([^ ]+) (\([^)]+\))', self.startup_log)
             self.build_info = f'**{m.group(1)}** *{m.group(2)}*' if m else '*unknown*'
-
-            self.server_status = f"✅ Ready!"
-            self.busy -= 1
-            yield self.server_status
         except Exception as e:
             errors.display(e, full_traceback=True)
             self.server_status = f'❌ {e}. See log for more.'
             self.busy -= 1
             yield self.server_status
+
+        self.server_status = f"✅ Ready!"
+        self.busy -= 1
+        yield self.server_status
 
     def load_status(self):
         status = None
