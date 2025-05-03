@@ -138,12 +138,25 @@ class SettingsUi:
 
         elem_id = f"setting_{key}"
 
-        with gr.Row() if info.refresh is not None and not is_quicksettings else contextlib.nullcontext():
-            res = comp(label=info.label, value=fun(), elem_id=elem_id, info=info.info, **(args or {}))
-            if info.refresh is not None:
-                ui_common.create_refresh_button(res, info.refresh, info.component_args, f"refresh_{key}")
+        res = comp(label=info.label, value=fun(), elem_id=elem_id, info=info.info, render=False, **(args or {}))
+
+        if info.refresh is not None:
+            with gr.Group():
+                with gr.Row():
+                    res.render()
+                    ui_common.create_refresh_button(res, info.refresh, info.component_args, f"refresh_{key}")
+        else:
+            res.render()
 
         return res
+
+    def get_value_for_setting(self, key):
+        value = getattr(self.opts, key)
+
+        info = self.opts.templates[key]
+        args = info.component_args() if callable(info.component_args) else info.component_args or {}
+
+        return gr.update(value=value, **args)
 
     def run_settings(self, *args):
         changed = []
@@ -165,6 +178,40 @@ class SettingsUi:
 
         return f'{len(changed)} settings changed{": " if changed else ""}{", ".join(changed)}.'
 
+    def run_settings_single(self, value, key):
+        if not self.opts.same_type(value, self.opts.templates[key].default):
+            return gr.update()
+
+        if value is None or not self.opts.set(key, value):
+            return gr.update(value=getattr(self.opts, key))
+
+        self.opts.save(self.config_filename)
+
+        return self.get_value_for_setting(key)
+
+    def render(self, key):
+        assert key not in self.component_dict
+
+        component = self.create_setting_component(key, is_quicksettings=True)
+        self.component_dict[key] = component
+
+        info = self.opts.templates[key]
+
+        if isinstance(component, gr.Textbox):
+            methods = [component.submit, component.blur]
+        elif hasattr(component, 'release'):
+            methods = [component.release]
+        else:
+            methods = [component.change]
+
+        for method in methods:
+            method(
+                fn=lambda value, key=key: self.run_settings_single(value, key=key),
+                inputs=[component],
+                outputs=[component],
+                show_progress=info.refresh is not None,
+            )
+
     def create_ui(self, demo):
         self.dummy_component = gr.Label(visible=False)
 
@@ -177,9 +224,13 @@ class SettingsUi:
 
             with gr.Group():
                 for i, (k, item) in enumerate(self.opts.templates.items()):
-                    component = self.create_setting_component(k)
-                    self.component_dict[k] = component
-                    self.components.append(component)
+                    component = self.component_dict.get(k)
+                    if component:
+                        self.components.append(component)
+                    else:
+                        component = self.create_setting_component(k)
+                        self.component_dict[k] = component
+                        self.components.append(component)
 
         self.submit.click(
             fn=self.run_settings,
@@ -189,16 +240,8 @@ class SettingsUi:
 
         component_keys = [k for k in self.opts.templates.keys() if k in self.component_dict]
 
-        def get_value_for_setting(key):
-            value = getattr(self.opts, key)
-
-            info = self.opts.templates[key]
-            args = info.component_args() if callable(info.component_args) else info.component_args or {}
-
-            return gr.update(value=value, **args)
-
         def get_settings_values():
-            return [get_value_for_setting(key) for key in component_keys]
+            return [self.get_value_for_setting(key) for key in component_keys]
 
         demo.load(
             fn=get_settings_values,

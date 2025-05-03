@@ -10,7 +10,7 @@ def main():
     launcher = llamalauncher.LlamaServerLauncher()
     ui = launcher.create_ui(settings_ui)
 
-    ui.queue(default_concurrency_limit=10).launch(prevent_thread_lock=True, favicon_path="favicon.png")
+    ui.queue(default_concurrency_limit=10).launch(prevent_thread_lock=True, favicon_path="assets/favicon.png")
 
     for _ in launcher.start_server():
         pass

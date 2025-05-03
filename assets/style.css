@@ -3,7 +3,8 @@
     flex: 0;
     min-width: 2.5em;
     border-radius: 0.5em;
-    margin: 2.35em 0.8em 0 0;
+    margin: 0 0 0 0.5em;
+    margin-top: calc(var(--line-sm) * 1rem + var(--spacing-lg) - 2px);
 }
 
 .compact .md p{ margin: 0; }
@@ -11,6 +12,11 @@
 
 .gr-group, .styler, .form{
     background: transparent !important;
+    border: none;
+}
+
+.gr-group .padded{
+    padding: 0;
 }
 
 .no-flicker .pending{

@@ -47,10 +47,15 @@ class LlamaServerLauncher:
             self.start_server()
 
     def model_info(self):
-        return f"""
-Model: **{self.model_name}** ({self.model_arch}, {(self.model_param_count or 0) // 1000000000}B, {(self.model_size or 0)/1024/1024/1024:.1f}GB)
+        if self.server_loading:
+            loaded_model = "*Loading...*"
+        else:
+            loaded_model = f"**{self.model_name}** ({self.model_arch}, {round((self.model_param_count or 0) / 1000000000)}B, {(self.model_size or 0) / 1024 / 1024 / 1024:.1f} GB)"
 
-Server: {self.build_info}
+        return f"""
+Loaded model: {loaded_model}
+
+Server: {self.build_info or '*Loading...*'}
         """.strip()
 
     def read_model_info(self):
@@ -184,7 +189,11 @@ Server: {self.build_info}
                         self.server_loading = False
                         return
 
-                if time.time() - start > 20:
+                if time.time() - start > shared.opts.llamacpp_startup_timeout:
+                    self.server_status = f"❌ Timed out waiting for output from server."
+                    yield self.server_status
+                    self.server_loading = False
+
                     self.startup_log += "\nTimed out."
                     break
 
@@ -194,7 +203,7 @@ Server: {self.build_info}
                 self.server_loading = False
                 return
 
-            m = re.search('build: ([^ ]+) ([^\n]+)', self.startup_log)
+            m = re.search(r'build: ([^ ]+) (\([^)]+\))', self.startup_log)
             self.build_info = f'**{m.group(1)}** *{m.group(2)}*' if m else '*unknown*'
 
             self.server_status = f"✅ Ready!"
@@ -239,10 +248,12 @@ Server: {self.build_info}
         return v if v != current_value else gr.update()
 
     def create_ui(self, settings_ui):
-        with gr.Blocks(css_paths=['style.css'], title="Llama.cpp launcher") as demo:
+        with gr.Blocks(css_paths=['assets/style.css'], title="Llama.cpp launcher") as demo:
 
             with gr.Tabs() as tabs:
                 with gr.Tab("Llama.cpp"):
+                    settings_ui.render('llamacpp_model')
+
                     with gr.Row():
                         with gr.Column(scale=6):
                             model_info = gr.Markdown(value='', elem_classes=['compact'])
@@ -273,13 +284,12 @@ Server: {self.build_info}
                 with gr.Tab("Settings"):
                     settings_ui.create_ui(demo)
 
-            demo.load(fn=self.load_status, outputs=[status])
-
             init_fields = dict(
                 fn=lambda: [self.model_info(), '```\n' + self.startup_log + '\n```', self.model_chat_template_markdown, self.model_tensor_info, '```\n' + self.commandline + '\n```'],
                 outputs=[model_info, startup_log, chat_template, tensor_info, commandline]
             )
 
+            demo.load(fn=self.load_status, outputs=[status]).then(**init_fields)
             demo.load(**init_fields)
             restart.click(fn=self.start_server, outputs=[status]).then(**init_fields)
 
