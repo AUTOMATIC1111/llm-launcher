@@ -26,8 +26,8 @@ def nvidia_smi():
 class LlamaServerLauncher:
     def __init__(self):
         self.server_process = None
-        self.server_loading = False
         self.server_reader: llamacpp_output_reader.Reader = None
+        self.busy = 0
 
         self.server_status = ''
         self.model_name = None
@@ -47,7 +47,7 @@ class LlamaServerLauncher:
             self.start_server()
 
     def model_info(self):
-        if self.server_loading:
+        if self.busy:
             loaded_model = "*Loading...*"
         else:
             loaded_model = f"**{self.model_name}** ({self.model_arch}, {round((self.model_param_count or 0) / 1000000000)}B, {(self.model_size or 0) / 1024 / 1024 / 1024:.1f} GB)"
@@ -126,10 +126,24 @@ Server: {self.build_info or '*Loading...*'}
             self.model_chat_template_markdown = f"Error rendering example: {e}\n\nFull chat template:\n```\n" + str(self.model_chat_template) + "\n```"
 
     def stop_server(self):
+        if self.busy:
+            gr.Warning('Already working!')
+            return
+
+        self.busy += 1
+
         if self.server_process and self.server_process.poll() is None:
+            self.server_status = 'Stopping server...'
+            yield self.server_status
+
             os.kill(self.server_process.pid, signal.SIGTERM if os.name == 'nt' else signal.SIGKILL)
             self.server_process.wait()
             self.server_process = None
+
+        self.server_status = '✋🏻 Stopped by user.'
+        yield self.server_status
+
+        self.busy -= 1
 
     def start_server(self):
         if not shared.opts.llamacpp_model:
@@ -137,7 +151,11 @@ Server: {self.build_info or '*Loading...*'}
             yield self.server_status
             return
 
-        self.server_loading = True
+        if self.busy:
+            gr.Warning('Already working!')
+            return
+
+        self.busy += 1
         self.startup_log = ''
         self.model_name = shared.opts.llamacpp_model
         self.model_path = os.path.join(shared.opts.llamacpp_model_dir, self.model_name)
@@ -145,9 +163,8 @@ Server: {self.build_info or '*Loading...*'}
         try:
             self.read_model_info()
 
-            self.server_status = 'Stopping server...'
-            yield self.server_status
-            self.stop_server()
+            for _ in self.stop_server():
+                pass
 
             self.server_status = 'Starting server...'
             yield self.server_status
@@ -161,6 +178,7 @@ Server: {self.build_info or '*Loading...*'}
                 stderr=subprocess.STDOUT,
                 bufsize=1,
                 text=True,
+                errors='ignore',
             )
 
             self.server_reader = llamacpp_output_reader.Reader(self.server_process.stdout)
@@ -186,39 +204,38 @@ Server: {self.build_info or '*Loading...*'}
                     if self.server_process.poll() is not None:
                         self.server_status = f"❌ Server exited before it was ready. See log for more."
                         yield self.server_status
-                        self.server_loading = False
+                        self.busy -= 1
                         return
 
                 if time.time() - start > shared.opts.llamacpp_startup_timeout:
                     self.server_status = f"❌ Timed out waiting for output from server."
                     yield self.server_status
-                    self.server_loading = False
-
                     self.startup_log += "\nTimed out."
+                    self.busy -= 1
                     break
 
             if not ready:
                 self.server_status = f"❌ Failed to start. See log for more."
                 yield self.server_status
-                self.server_loading = False
+                self.busy -= 1
                 return
 
             m = re.search(r'build: ([^ ]+) (\([^)]+\))', self.startup_log)
             self.build_info = f'**{m.group(1)}** *{m.group(2)}*' if m else '*unknown*'
 
             self.server_status = f"✅ Ready!"
-            self.server_loading = False
+            self.busy -= 1
             yield self.server_status
         except Exception as e:
             errors.display(e, full_traceback=True)
             self.server_status = f'❌ {e}. See log for more.'
-            self.server_loading = False
+            self.busy -= 1
             yield self.server_status
 
     def load_status(self):
         status = None
 
-        while self.server_loading:
+        while self.busy:
             if status != self.server_status:
                 status = self.server_status
                 yield self.server_status
@@ -258,6 +275,8 @@ Server: {self.build_info or '*Loading...*'}
                         with gr.Column(scale=6):
                             model_info = gr.Markdown(value='', elem_classes=['compact'])
                         with gr.Column(scale=1, min_width=40):
+                            stop = gr.Button("Stop")
+                        with gr.Column(scale=1, min_width=40):
                             restart = gr.Button("Restart")
 
                     stats = gr.Markdown(value='', elem_classes=['no-flicker', 'compact'])
@@ -292,6 +311,8 @@ Server: {self.build_info or '*Loading...*'}
             demo.load(fn=self.load_status, outputs=[status]).then(**init_fields)
             demo.load(**init_fields)
             restart.click(fn=self.start_server, outputs=[status]).then(**init_fields)
+
+            stop.click(fn=self.stop_server, outputs=[status]).then(**init_fields)
 
             refresh_system.click(fn=nvidia_smi, outputs=[nvidia_smi_view])
             demo.load(fn=nvidia_smi, outputs=[nvidia_smi_view])
