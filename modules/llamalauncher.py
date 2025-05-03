@@ -107,6 +107,7 @@ Server: {self.build_info or '*Loading...*'}
 
         template_vars = {
             'messages': [
+                {"role": "system", "content": "You are a helpful assistant"},
                 {"role": "user", "content": "What is 1+1?"},
                 {"role": "assistant", "content": "It's 2."},
                 {"role": "user", "content": "Thank you."},
@@ -119,7 +120,12 @@ Server: {self.build_info or '*Loading...*'}
         }
 
         try:
-            rendered = templating.render(self.model_chat_template, template_vars)
+            try:
+                rendered = templating.render(self.model_chat_template, template_vars)
+            except Exception as e:
+                template_vars['messages'].pop(0)
+                rendered = templating.render(self.model_chat_template, template_vars)
+
             self.model_chat_template_example = rendered
             self.model_chat_template_markdown = "Example:\n```\n" + str(rendered) + "\n```\n\nFull chat template:\n```\n" + str(self.model_chat_template) + "\n```"
         except Exception as e:
