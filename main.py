@@ -1,14 +1,16 @@
-from modules import settings, shared, shared_options, llamalauncher
+from modules import settings, shared, shared_options, llamalauncher, cmd_args
 
 
 def main():
+    shared.args = cmd_args.parser.parse_args()
+
     shared.opts = settings.Settings(shared_options.temlates)
-    settings_ui = settings.SettingsUi(shared.opts, shared.config_filename)
+    settings_ui = settings.SettingsUi(shared.opts, shared.args.config)
 
     launcher = llamalauncher.LlamaServerLauncher()
     ui = launcher.create_ui(settings_ui)
 
-    ui.queue().launch(prevent_thread_lock=True, favicon_path="favicon.png")
+    ui.queue(default_concurrency_limit=10).launch(prevent_thread_lock=True, favicon_path="favicon.png")
 
     for _ in launcher.start_server():
         pass

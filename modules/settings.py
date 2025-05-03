@@ -1,3 +1,4 @@
+import contextlib
 import dataclasses
 import json
 import os
@@ -21,6 +22,7 @@ class Template:
     component_args: dict = None
     refresh: object = None
     do_not_save: bool = False
+    info: str = None
 
 
 class Settings:
@@ -136,16 +138,10 @@ class SettingsUi:
 
         elem_id = f"setting_{key}"
 
-        if info.refresh is not None:
-            if is_quicksettings:
-                res = comp(label=info.label, value=fun(), elem_id=elem_id, **(args or {}))
+        with gr.Row() if info.refresh is not None and not is_quicksettings else contextlib.nullcontext():
+            res = comp(label=info.label, value=fun(), elem_id=elem_id, info=info.info, **(args or {}))
+            if info.refresh is not None:
                 ui_common.create_refresh_button(res, info.refresh, info.component_args, f"refresh_{key}")
-            else:
-                with gr.Row():
-                    res = comp(label=info.label, value=fun(), elem_id=elem_id, **(args or {}))
-                    ui_common.create_refresh_button(res, info.refresh, info.component_args, f"refresh_{key}")
-        else:
-            res = comp(label=info.label, value=fun(), elem_id=elem_id, **(args or {}))
 
         return res
 
@@ -179,10 +175,11 @@ class SettingsUi:
 
             self.result = gr.HTML(elem_id="settings_result")
 
-            for i, (k, item) in enumerate(self.opts.templates.items()):
-                component = self.create_setting_component(k)
-                self.component_dict[k] = component
-                self.components.append(component)
+            with gr.Group():
+                for i, (k, item) in enumerate(self.opts.templates.items()):
+                    component = self.create_setting_component(k)
+                    self.component_dict[k] = component
+                    self.components.append(component)
 
         self.submit.click(
             fn=self.run_settings,

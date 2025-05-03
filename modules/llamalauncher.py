@@ -1,7 +1,7 @@
 import math
+import queue
 import re
 import shlex
-import sys
 import time
 
 import gradio as gr
@@ -9,19 +9,26 @@ import subprocess
 import os
 import signal
 
-import select
 import gguf_parser
 
-from modules import shared, errors
+from modules import shared, errors, llamacpp_output_reader
 
 
 def nvidia_smi():
-    return '```\n' + subprocess.check_output('nvidia-smi; echo; free -h; echo; df -h -T -x tmpfs', shell=True).decode('utf8', errors='ignore') + '\n```'
+    if os.name == 'nt':
+        command = 'nvidia-smi'
+    else:
+        command = 'nvidia-smi; echo; free -h; echo; df -h -T -x tmpfs'
+
+    return '```\n' + subprocess.check_output(command, shell=True).decode('utf8', errors='ignore') + '\n```'
 
 
 class LlamaServerLauncher:
     def __init__(self):
         self.server_process = None
+        self.server_loading = False
+        self.server_reader: llamacpp_output_reader.Reader = None
+
         self.server_status = ''
         self.model_name = None
         self.model_path = None
@@ -32,6 +39,7 @@ class LlamaServerLauncher:
         self.model_param_count = None
         self.build_info = None
         self.startup_log = ''
+        self.commandline = ''
 
         if shared.opts.llamacpp_model:
             self.start_server()
@@ -64,7 +72,7 @@ Server: {self.build_info}
 
     def stop_server(self):
         if self.server_process and self.server_process.poll() is None:
-            os.kill(self.server_process.pid, signal.SIGKILL)
+            os.kill(self.server_process.pid, signal.SIGTERM if os.name == 'nt' else signal.SIGKILL)
             self.server_process.wait()
             self.server_process = None
 
@@ -74,6 +82,7 @@ Server: {self.build_info}
             yield self.server_status
             return
 
+        self.server_loading = True
         self.startup_log = ''
         self.model_name = shared.opts.llamacpp_model
         self.model_path = os.path.join(shared.opts.llamacpp_model_dir, self.model_name)
@@ -88,7 +97,19 @@ Server: {self.build_info}
             self.server_status = 'Starting server...'
             yield self.server_status
 
-            cmd = [shared.opts.llamacpp_exe, "-m", self.model_path] + shlex.split(shared.opts.llamacpp_cmdline.strip())
+            permodel_opts_all = [x.partition(':') for x in shared.opts.llamacpp_cmdline_permodel.split('\n')]
+            permodel_opts = next((opts for model, _, opts in permodel_opts_all if model and model.lower() in self.model_name.lower()), '')
+
+            cmd = [shared.opts.llamacpp_exe, "-m", self.model_path] + shlex.split(permodel_opts.strip()) + shlex.split(shared.opts.llamacpp_cmdline.strip())
+
+            if shared.opts.llamacpp_port:
+                cmd += ["--port", shared.opts.llamacpp_port]
+
+            if shared.opts.llamacpp_host:
+                cmd += ["--host", shared.opts.llamacpp_host]
+
+            self.commandline = shlex.join(cmd)
+
             self.server_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -97,30 +118,31 @@ Server: {self.build_info}
                 text=True,
             )
 
-            fd = self.server_process.stdout.fileno()
+            self.server_reader = llamacpp_output_reader.Reader(self.server_process.stdout)
+
             ready = False
             start = time.time()
 
-            self.server_status = 'Waiting for model to load...'
+            self.server_status = 'Waiting for server to start...'
             yield self.server_status
 
             while True:
-                rlist, _, _ = select.select([fd], [], [], 0.1)
+                try:
+                    line = self.server_reader.queue.get(timeout=0.2)
+                    if line:
+                        self.startup_log += line
+                        start = time.time()
 
-                if rlist:
-                    start = time.time()
-                    data = os.read(fd, 1024).decode(errors="ignore")
-                    self.startup_log += data
+                        if "starting the main loop" in line:
+                            ready = True
+                            break
 
-                    print(data, end='')
-                    sys.stdout.flush()
-
-                    if "starting the main loop" in self.startup_log:
-                        ready = True
-                        break
-
-                if self.server_process.poll() is not None:
-                    break
+                except queue.Empty:
+                    if self.server_process.poll() is not None:
+                        self.server_status = f"❌ Server exited before it was ready. See log for more."
+                        yield self.server_status
+                        self.server_loading = False
+                        return
 
                 if time.time() - start > 20:
                     self.startup_log += "\nTimed out."
@@ -129,17 +151,52 @@ Server: {self.build_info}
             if not ready:
                 self.server_status = f"❌ Failed to start. See log for more."
                 yield self.server_status
+                self.server_loading = False
                 return
 
             m = re.search('build: ([^ ]+) ([^\n]+)', self.startup_log)
             self.build_info = f'**{m.group(1)}** *{m.group(2)}*' if m else '*unknown*'
 
             self.server_status = f"✅ Ready!"
+            self.server_loading = False
             yield self.server_status
         except Exception as e:
             errors.display(e, full_traceback=True)
             self.server_status = f'❌ {e}. See log for more.'
+            self.server_loading = False
             yield self.server_status
+
+    def load_status(self):
+        status = None
+
+        while self.server_loading:
+            if status != self.server_status:
+                status = self.server_status
+                yield self.server_status
+
+            time.sleep(0.2)
+
+        yield self.server_status
+
+    def stats(self, current_value=None):
+        tokens_generated = sum(x.tokens_generate for x in self.server_reader.requests)
+        tokens_processed = sum(x.tokens_process for x in self.server_reader.requests)
+        time_generating = sum(x.time_generate for x in self.server_reader.requests) / 1000
+        time_processing = sum(x.time_process for x in self.server_reader.requests) / 1000
+
+        v = f"""
+        *In last {self.server_reader.keep_requests_duration // 60} minutes:*
+        > Completed requests: **{len(self.server_reader.requests)}**
+        >
+        > Tokens generated: **{tokens_generated}**
+        >
+        > Tokens processed: **{tokens_processed}**
+        >
+        > Avg generation rate: **{round(tokens_generated / time_generating, 1) if time_generating else 'none'}** tokens/sec
+        >
+        > Avg processing rate: **{round(tokens_processed / time_processing, 1) if time_processing else 'none'}** tokens/sec
+        """.strip()
+        return v if v != current_value else gr.update()
 
     def create_ui(self, settings_ui):
         with gr.Blocks(css_paths=['style.css'], title="Llama.cpp launcher") as demo:
@@ -148,31 +205,39 @@ Server: {self.build_info}
                 with gr.Tab("Llama.cpp"):
                     with gr.Row():
                         with gr.Column(scale=6):
-                            model_info = gr.Markdown(value='', show_label=False, elem_classes=['model-info'])
+                            model_info = gr.Markdown(value='', elem_classes=['compact'])
                         with gr.Column(scale=1, min_width=40):
                             restart = gr.Button("Restart")
 
-                    with gr.Accordion("Startup log", open=False):
-                        startup_log = gr.Markdown(value='', show_label=False)
+                    stats = gr.Markdown(value='', elem_classes=['no-flicker', 'compact'])
 
-                    with gr.Accordion("Chat template", open=False):
-                        chat_template = gr.Markdown(value='', show_label=False)
-
-                    with gr.Accordion("Tensors", open=False):
-                        tensor_info = gr.Markdown(value='', show_label=False)
-
-                    status = gr.Markdown(value=lambda: self.server_status, show_label=False)
-
-                with gr.Tab("Settings"):
-                    settings_ui.create_ui(demo)
+                    status = gr.Markdown(value='')
 
                 with gr.Tab("System"):
                     refresh_system = gr.Button("Refresh")
                     nvidia_smi_view = gr.Markdown()
 
+                with gr.Tab("Info"):
+                    with gr.Accordion("Full command line", open=False):
+                        commandline = gr.Markdown(value='')
+
+                    with gr.Accordion("Startup log", open=False):
+                        startup_log = gr.Markdown(value='')
+
+                    with gr.Accordion("Chat template", open=False):
+                        chat_template = gr.Markdown(value='')
+
+                    with gr.Accordion("Tensors", open=False):
+                        tensor_info = gr.Markdown(value='')
+
+                with gr.Tab("Settings"):
+                    settings_ui.create_ui(demo)
+
+            demo.load(fn=self.load_status, outputs=[status])
+
             init_fields = dict(
-                fn=lambda: [self.model_info(), '```\n' + self.startup_log + '\n```', self.model_chat_template, self.model_tensor_info],
-                outputs=[model_info, startup_log, chat_template, tensor_info]
+                fn=lambda: [self.model_info(), '```\n' + self.startup_log + '\n```', self.model_chat_template, self.model_tensor_info, '```\n' + self.commandline + '\n```'],
+                outputs=[model_info, startup_log, chat_template, tensor_info, commandline]
             )
 
             demo.load(**init_fields)
@@ -180,5 +245,8 @@ Server: {self.build_info}
 
             refresh_system.click(fn=nvidia_smi, outputs=[nvidia_smi_view])
             demo.load(fn=nvidia_smi, outputs=[nvidia_smi_view])
+
+            gr.Timer(1).tick(fn=self.stats, inputs=[stats], outputs=[stats],  show_progress="hidden")
+            demo.load(fn=self.stats, outputs=[stats],  show_progress="hidden")
 
         return demo

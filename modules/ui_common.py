@@ -40,7 +40,7 @@ def create_refresh_button(refresh_component, refresh_method, refreshed_args, ele
 
         return [gr.update(**(args or {})) for _ in refresh_components] if len(refresh_components) > 1 else gr.update(**(args or {}))
 
-    refresh_button = gr.Button(value=refresh_symbol, elem_id=elem_id, elem_classes="tool")
+    refresh_button = gr.Button(value=refresh_symbol, elem_id=elem_id, elem_classes=["refresh"])
     refresh_button.click(
         fn=refresh,
         inputs=[],
@@ -48,3 +48,7 @@ def create_refresh_button(refresh_component, refresh_method, refreshed_args, ele
     )
     return refresh_button
 
+
+def onform(comp):
+    comp.get_expected_parent = lambda: gr.components.Form
+    return comp

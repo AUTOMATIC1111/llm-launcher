@@ -1,9 +1,18 @@
 
-.tool{
+.refresh{
     flex: 0;
     min-width: 2.5em;
+    border-radius: 0.5em;
+    margin: 2.35em 0.8em 0 0;
 }
 
-.model-info p{
-    margin: 0;
+.compact .md p{ margin: 0; }
+.compact .md blockquote{  margin: 0 !important; }
+
+.gr-group, .styler, .form{
+    background: transparent !important;
+}
+
+.no-flicker .pending{
+    opacity: 1;
 }
