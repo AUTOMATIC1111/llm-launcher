@@ -1,3 +1,4 @@
+import html
 import math
 import queue
 import re
@@ -45,18 +46,6 @@ class LlamaServerLauncher:
 
         if shared.opts.llamacpp_model:
             self.start_server()
-
-    def model_info(self):
-        if self.busy:
-            loaded_model = "*Loading...*"
-        else:
-            loaded_model = f"**{self.model_name}** ({self.model_arch}, {round((self.model_param_count or 0) / 1000000000)}B, {(self.model_size or 0) / 1024 / 1024 / 1024:.1f} GB)"
-
-        return f"""
-Loaded model: {loaded_model}
-
-Server: {self.build_info or '*Loading...*'}
-        """.strip()
 
     def read_model_info(self):
         parser = gguf_parser.GGUFParser(self.model_path)
@@ -208,7 +197,7 @@ Server: {self.build_info or '*Loading...*'}
 
                 except queue.Empty:
                     if self.server_process.poll() is not None:
-                        self.server_status = f"❌ Server exited before it was ready. See log for more."
+                        self.server_status = f"❌ Server exited before it was ready."
                         yield self.server_status
                         self.busy -= 1
                         return
@@ -221,13 +210,13 @@ Server: {self.build_info or '*Loading...*'}
                     break
 
             if not ready:
-                self.server_status = f"❌ Failed to start. See log for more."
+                self.server_status = f"❌ Failed to start."
                 yield self.server_status
                 self.busy -= 1
                 return
 
             m = re.search(r'build: ([^ ]+) (\([^)]+\))', self.startup_log)
-            self.build_info = f'**{m.group(1)}** *{m.group(2)}*' if m else '*unknown*'
+            self.build_info = f'<b>{html.escape(m.group(1))}</b><br /><em>{m.group(2)}</em>' if m else '<em>unknown<em>'
         except Exception as e:
             errors.display(e, full_traceback=True)
             self.server_status = f'❌ {e}. See log for more.'
@@ -256,18 +245,51 @@ Server: {self.build_info or '*Loading...*'}
         time_generating = sum(x.time_generate for x in self.server_reader.requests) / 1000
         time_processing = sum(x.time_process for x in self.server_reader.requests) / 1000
 
+        if self.busy:
+            loaded_model = "<em>Loading...</em>"
+            build_info = '<em>Loading...</em>'
+        else:
+            loaded_model = f"<b>{html.escape(self.model_name)}</b> <br />({html.escape(self.model_arch)}, {round((self.model_param_count or 0) / 1000000000)}B, {(self.model_size or 0) / 1024 / 1024 / 1024:.1f} GB)"
+            build_info = self.build_info
+
         v = f"""
-        *In last {self.server_reader.keep_requests_duration // 60} minutes:*
-        > Completed requests: **{len(self.server_reader.requests)}**
-        >
-        > Tokens generated: **{tokens_generated}**
-        >
-        > Tokens processed: **{tokens_processed}**
-        >
-        > Avg generation rate: **{round(tokens_generated / time_generating, 1) if time_generating else 'none'}** tokens/sec
-        >
-        > Avg processing rate: **{round(tokens_processed / time_processing, 1) if time_processing else 'none'}** tokens/sec
-        """.strip()
+<table class='stats'>
+    <thead>
+    <tr>
+        <th><span>Model</span></th>
+        <th><span>Version</span></th>
+        <th><span>Completed</span></th>
+        <th><span>Generation</span></th>
+        <th><span>Processing</span></th>
+    </tr>
+    </thead>
+    <tbody>
+    <tr>
+        <td class='stat-model'>
+            <span class='textstat'>{loaded_model}</span>
+        </td>
+        <td class='stat-build'>
+            <span class='textstat'>{build_info}</span>
+        </td>
+        <td class='stat-requests'>
+            <span class='bigstat'>{len(self.server_reader.requests)}</span>
+            <span class='bigstat-subtitle'>Requests</span>
+        </td>
+        <td class='stat-generated'>
+            <span class='bigstat'>{round(tokens_generated / time_generating, 1) if time_generating else '0'}</span>
+            <span class='bigstat-subtitle'>Tokens/sec</span>
+            <span class='ministat'>Total: {tokens_generated}</span>
+        </td>
+        <td class='stat-processed'>
+            <span class='bigstat'>{round(tokens_processed / time_processing, 1) if time_processing else '0'}</span>
+            <span class='bigstat-subtitle'>Tokens/sec</span>
+            <span class='ministat'>Total: {tokens_processed}</span>
+        </td>
+    </tr>
+    </tbody>
+</table>
+""".strip()
+
         return v if v != current_value else gr.update()
 
     def create_ui(self, settings_ui):
@@ -275,19 +297,17 @@ Server: {self.build_info or '*Loading...*'}
 
             with gr.Tabs() as tabs:
                 with gr.Tab("Llama.cpp"):
-                    settings_ui.render('llamacpp_model')
 
                     with gr.Row():
                         with gr.Column(scale=6):
-                            model_info = gr.Markdown(value='', elem_classes=['compact'])
+                            settings_ui.render('llamacpp_model')
                         with gr.Column(scale=1, min_width=40):
-                            stop = gr.Button("Stop")
-                        with gr.Column(scale=1, min_width=40):
-                            restart = gr.Button("Restart")
+                            stop = gr.Button("Stop", elem_classes=['aligned-to-label'])
+                        with gr.Column(scale=1, min_width=50):
+                            restart = gr.Button("Start", elem_classes=['aligned-to-label'], variant="primary")
 
-                    stats = gr.Markdown(value='', elem_classes=['no-flicker', 'compact'])
-
-                    status = gr.Markdown(value='')
+                    stats = gr.HTML(value='', elem_classes=['no-flicker', 'compact'])
+                    status = gr.Markdown(value='*Loading...*', elem_classes=['status'])
 
                 with gr.Tab("System"):
                     refresh_system = gr.Button("Refresh")
@@ -310,8 +330,8 @@ Server: {self.build_info or '*Loading...*'}
                     settings_ui.create_ui(demo)
 
             init_fields = dict(
-                fn=lambda: [self.model_info(), '```\n' + self.startup_log + '\n```', self.model_chat_template_markdown, self.model_tensor_info, '```\n' + self.commandline + '\n```'],
-                outputs=[model_info, startup_log, chat_template, tensor_info, commandline]
+                fn=lambda: ['```\n' + self.startup_log + '\n```', self.model_chat_template_markdown, self.model_tensor_info, '```\n' + self.commandline + '\n```'],
+                outputs=[startup_log, chat_template, tensor_info, commandline]
             )
 
             demo.load(fn=self.load_status, outputs=[status]).then(**init_fields)

@@ -138,7 +138,7 @@ class SettingsUi:
 
         elem_id = f"setting_{key}"
 
-        res = comp(label=info.label, value=fun(), elem_id=elem_id, info=info.info, render=False, **(args or {}))
+        res = comp(label=info.label, value=None, elem_id=elem_id, info=info.info, render=False, **(args or {}))
 
         if info.refresh is not None:
             with gr.Group():
@@ -248,6 +248,7 @@ class SettingsUi:
             inputs=[],
             outputs=[self.component_dict[k] for k in component_keys],
             queue=False,
+            show_progress='minimal',
         )
 
         self.interface = settings_interface

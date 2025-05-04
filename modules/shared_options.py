@@ -1,4 +1,3 @@
-import os
 import gradio as gr
 
 from modules import settings, shared_options_funcs
@@ -14,5 +13,4 @@ temlates = [
     settings.Template(llamacpp, "llamacpp_cmdline", '', "Command line options"),
     settings.Template(llamacpp, "llamacpp_cmdline_permodel", '', "Model-specific command-line options", gr.Textbox, dict(lines=8), info="One model per line, like this: (copy model name from the field above)\nmodel.gguf: --flash-attn\nllama6.gguf: --ctx-size 4096"),
     settings.Template(llamacpp, "llamacpp_startup_timeout", 30, "Startup inactivity detection timeout", gr.Number),
-
 ]

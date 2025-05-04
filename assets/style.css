@@ -4,6 +4,9 @@
     min-width: 2.5em;
     border-radius: 0.5em;
     margin: 0 0 0 0.5em;
+}
+
+.aligned-to-label, .refresh{
     margin-top: calc(var(--line-sm) * 1rem + var(--spacing-lg) - 2px);
 }
 
@@ -19,6 +22,61 @@
     padding: 0;
 }
 
-.no-flicker .pending{
-    opacity: 1;
+.pending{
+    opacity: 1 !important;
+}
+
+table.stats{
+    border: 1px solid #8c8c8c7d;
+    padding: 2em;
+    border-radius: 0.5em;
+    margin: 0 auto;
+    border-collapse: unset;
+}
+
+table.stats tr, table.stats td, table.stats th{
+    border: 0;
+    text-align: center;
+    padding: 0 1em;
+    vertical-align: top;
+}
+
+table.stats th{
+    font-size: 110%;
+}
+table.stats th span{
+    border-bottom: 1px solid black;
+    padding: 0 1em;
+}
+
+.bigstat{
+    font-size: 36pt;
+    display: block;
+}
+
+.bigstat-subtitle{
+    font-size: 90%;
+    display: block;
+    margin-top: -0.9em;
+}
+
+.ministat{
+    font-size: 80%;
+    display: block;
+}
+
+td.stat-model{  width: 18em;}
+td.stat-build{  width: 8em;}
+td.stat-requests{  width: 8em;}
+td.stat-generated{  width: 8em;}
+td.stat-processed{  width: 10em;}
+
+.textstat{
+    font-size: 120%;
+    display: block;
+    margin-top: 0.8em;
+}
+
+.status{
+    text-align: center;
 }

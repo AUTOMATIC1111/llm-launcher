@@ -21,7 +21,7 @@ class Reader:
         self.pipe = pipe
         self.requests: list[RequestStat] = []
         self.current_request = RequestStat()
-        self.keep_requests_duration = 10 * 60
+        self.keep_requests_duration = 30 * 60
 
         thread = threading.Thread(target=self.main, args=(), daemon=True)
         thread.start()
