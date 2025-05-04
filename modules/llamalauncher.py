@@ -111,7 +111,7 @@ class LlamaServerLauncher:
         try:
             try:
                 rendered = templating.render(self.model_chat_template, template_vars)
-            except Exception as e:
+            except Exception:
                 template_vars['messages'].pop(0)
                 rendered = templating.render(self.model_chat_template, template_vars)
 
@@ -197,20 +197,20 @@ class LlamaServerLauncher:
 
                 except queue.Empty:
                     if self.server_process.poll() is not None:
-                        self.server_status = f"❌ Server exited before it was ready."
+                        self.server_status = "❌ Server exited before it was ready."
                         yield self.server_status
                         self.busy -= 1
                         return
 
                 if time.time() - start > shared.opts.llamacpp_startup_timeout:
-                    self.server_status = f"❌ Timed out waiting for output from server."
+                    self.server_status = "❌ Timed out waiting for output from server."
                     yield self.server_status
                     self.startup_log += "\nTimed out."
                     self.busy -= 1
                     break
 
             if not ready:
-                self.server_status = f"❌ Failed to start."
+                self.server_status = "❌ Failed to start."
                 yield self.server_status
                 self.busy -= 1
                 return
@@ -223,7 +223,7 @@ class LlamaServerLauncher:
             self.busy -= 1
             yield self.server_status
 
-        self.server_status = f"✅ Ready!"
+        self.server_status = "✅ Ready!"
         self.busy -= 1
         yield self.server_status
 
@@ -295,7 +295,7 @@ class LlamaServerLauncher:
     def create_ui(self, settings_ui):
         with gr.Blocks(css_paths=['assets/style.css'], title="Llama.cpp launcher") as demo:
 
-            with gr.Tabs() as tabs:
+            with gr.Tabs():
                 with gr.Tab("Llama.cpp"):
 
                     with gr.Row():

@@ -1,4 +1,3 @@
-import contextlib
 import dataclasses
 import json
 import os
@@ -116,25 +115,24 @@ class SettingsUi:
 
         self.opts.load(config_filename)
 
-    def create_setting_component(self, key, is_quicksettings=False):
+    def create_setting_component(self, key):
         def fun():
             return self.opts.data[key] if key in self.opts.data else self.opts.templates[key].default
 
         info = self.opts.templates[key]
-        t = type(info.default)
 
         args = info.component_args() if callable(info.component_args) else info.component_args
 
         if info.component is not None:
             comp = info.component
-        elif t == str:
+        elif isinstance(info.default, str):
             comp = gr.Textbox
-        elif t == int:
+        elif isinstance(info.default, int):
             comp = gr.Number
-        elif t == bool:
+        elif isinstance(info.default, bool):
             comp = gr.Checkbox
         else:
-            raise Exception(f'bad options item type: {t} for key {key}')
+            raise Exception(f'bad options item type: {type(info.default)} for key {key}')
 
         elem_id = f"setting_{key}"
 
@@ -192,7 +190,7 @@ class SettingsUi:
     def render(self, key):
         assert key not in self.component_dict
 
-        component = self.create_setting_component(key, is_quicksettings=True)
+        component = self.create_setting_component(key)
         self.component_dict[key] = component
 
         info = self.opts.templates[key]
