@@ -12,7 +12,7 @@ import signal
 
 import gguf_parser
 
-from modules import shared, errors, llamacpp_output_reader, templating
+from modules import shared, errors, llamacpp_output_reader, templating, ui_download
 
 
 def nvidia_smi():
@@ -28,6 +28,7 @@ class LlamaServerLauncher:
     def __init__(self):
         self.server_process = None
         self.server_reader: llamacpp_output_reader.Reader = None
+        self.downloader = ui_download.HuggingfaceDownloader()
         self.busy = 0
 
         self.server_status = ''
@@ -43,9 +44,6 @@ class LlamaServerLauncher:
         self.build_info = None
         self.startup_log = ''
         self.commandline = ''
-
-        if shared.opts.llamacpp_model:
-            self.start_server()
 
     def read_model_info(self):
         parser = gguf_parser.GGUFParser(self.model_path)
@@ -119,6 +117,11 @@ class LlamaServerLauncher:
             self.model_chat_template_markdown = "Example:\n```\n" + str(rendered) + "\n```\n\nFull chat template:\n```\n" + str(self.model_chat_template) + "\n```"
         except Exception as e:
             self.model_chat_template_markdown = f"Error rendering example: {e}\n\nFull chat template:\n```\n" + str(self.model_chat_template) + "\n```"
+
+    def launch_at_startup(self):
+        if shared.opts.llamacpp_model and shared.opts.llamacpp_run_at_startup:
+            for _ in self.start_server():
+                pass
 
     def stop_server(self, skip_check=False):
         if self.busy and not skip_check:
@@ -239,7 +242,10 @@ class LlamaServerLauncher:
 
         yield self.server_status
 
-    def stats(self, current_value=None):
+    def stats(self, current_value):
+        if not self.server_reader:
+            return ""
+
         tokens_generated = sum(x.tokens_generate for x in self.server_reader.requests)
         tokens_processed = sum(x.tokens_process for x in self.server_reader.requests)
         time_generating = sum(x.time_generate for x in self.server_reader.requests) / 1000
@@ -293,7 +299,15 @@ class LlamaServerLauncher:
         return v if v != current_value else gr.update()
 
     def create_ui(self, settings_ui):
-        with gr.Blocks(css_paths=['assets/style.css'], title="Llama.cpp launcher") as demo:
+        js = """
+        function(){
+            const script = document.createElement('script');
+            script.src = "/gradio_api/file=assets/script.js";
+            (document.head || document.documentElement).appendChild(script);
+        }
+        """
+
+        with gr.Blocks(css_paths=['assets/style.css'], title="Llama.cpp launcher", js=js) as demo:
 
             with gr.Tabs():
                 with gr.Tab("Llama.cpp"):
@@ -309,11 +323,14 @@ class LlamaServerLauncher:
                     stats = gr.HTML(value='', elem_classes=['no-flicker', 'compact'])
                     status = gr.Markdown(value='*Loading...*', elem_classes=['status'])
 
-                with gr.Tab("System"):
-                    refresh_system = gr.Button("Refresh")
-                    nvidia_smi_view = gr.Markdown()
+                with gr.Tab("Download"):
+                    self.downloader.create_ui(demo)
 
                 with gr.Tab("Info"):
+                    with gr.Accordion("System", open=False):
+                        refresh_system = gr.Button("Refresh")
+                        nvidia_smi_view = gr.Markdown()
+
                     with gr.Accordion("Full command line", open=False):
                         commandline = gr.Markdown(value='')
 
@@ -343,7 +360,7 @@ class LlamaServerLauncher:
             refresh_system.click(fn=nvidia_smi, outputs=[nvidia_smi_view])
             demo.load(fn=nvidia_smi, outputs=[nvidia_smi_view])
 
-            gr.Timer(1).tick(fn=self.stats, inputs=[stats], outputs=[stats],  show_progress="hidden")
-            demo.load(fn=self.stats, outputs=[stats],  show_progress="hidden")
+            gr.Timer(1).tick(api_name="update_stats_timer", fn=self.stats, inputs=[stats], outputs=[stats], show_progress="hidden")
+            demo.load(api_name="update_stats_load", fn=self.stats, inputs=[stats], outputs=[stats], show_progress="hidden")
 
         return demo

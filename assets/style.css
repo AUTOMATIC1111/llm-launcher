@@ -80,3 +80,64 @@ td.stat-processed{  width: 10em;}
 .status{
     text-align: center;
 }
+
+
+.downloads .html-container {
+    padding: 0;
+}
+
+.downloads .download {
+    margin: 0 1em 1em 1em;
+    position: relative;
+}
+
+.downloads .download .cross{
+    position: absolute;
+    right: 0px;
+    width: 26px;
+    height: 26px;
+    font-size: 12pt;
+    display: inline-block;
+    text-align: center;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    z-index: 1;
+    top: 10px;
+}
+
+.downloads .download .cross:hover{
+    background: rgba(128, 128, 128, 0.3);
+    border: 1px solid rgba(128, 128, 128, 0.6);
+}
+
+.downloads .download .upper{
+    font-size: 110%;
+}
+
+.downloads .download .progressbar {
+    height: 4px;
+    border-radius: 2px;
+    background: #ddd;
+    overflow: hidden;
+    position: relative;
+    margin-right: 32px;
+}
+
+.downloads .download .progressbar .progress {
+    height: 100%;
+    background: #39f;
+    transition: width 0.3s ease;
+}
+
+.downloads .download .error {
+    color: #e74c3c;
+    max-width: 60%;
+    text-overflow: ellipsis;
+    overflow: hidden;
+}
+
+.downloads .download .lower{
+   opacity: 75%;
+   font-size: 90%;
+}
