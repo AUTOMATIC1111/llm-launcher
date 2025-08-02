@@ -220,15 +220,20 @@ class SettingsUi:
 
             self.result = gr.HTML(elem_id="settings_result")
 
-            with gr.Group():
-                for i, (k, item) in enumerate(self.opts.templates.items()):
-                    component = self.component_dict.get(k)
-                    if component:
-                        self.components.append(component)
-                    else:
-                        component = self.create_setting_component(k)
-                        self.component_dict[k] = component
-                        self.components.append(component)
+            sections = list({x.section.text: 1 for x in self.opts.templates.values()})
+
+            with gr.Tabs():
+                for section in sections:
+                    with gr.Tab(label=section, id=section):
+                        items = [(k, item) for k, item in self.opts.templates.items() if item.section.text == section]
+                        for k, item in items:
+                            component = self.component_dict.get(k)
+                            if component:
+                                self.components.append(component)
+                            else:
+                                component = self.create_setting_component(k)
+                                self.component_dict[k] = component
+                                self.components.append(component)
 
         self.submit.click(
             fn=self.run_settings,

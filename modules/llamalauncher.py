@@ -1,18 +1,11 @@
 import html
-import math
-import queue
-import re
-import shlex
 import time
 
 import gradio as gr
 import subprocess
 import os
-import signal
 
-import gguf_parser
-
-from modules import shared, errors, llamacpp_output_reader, templating, ui_download
+from modules import shared, errors, ui_download, backend, models
 
 
 def nvidia_smi():
@@ -26,237 +19,117 @@ def nvidia_smi():
 
 class LlamaServerLauncher:
     def __init__(self):
-        self.server_process = None
-        self.server_reader: llamacpp_output_reader.Reader = None
+        self.server_status = "Not started"
+        self.backend: backend.BackendBase = None
+
         self.downloader = ui_download.HuggingfaceDownloader()
         self.busy = 0
 
-        self.server_status = ''
-        self.model_name = None
-        self.model_path = None
-        self.model_arch = None
-        self.model_chat_template = None
-        self.model_chat_template_example = None
-        self.model_chat_template_markdown = None
-        self.model_tensor_info = None
-        self.model_size = None
-        self.model_param_count = None
-        self.build_info = None
-        self.startup_log = ''
-        self.commandline = ''
-
-    def read_model_info(self):
-        parser = gguf_parser.GGUFParser(self.model_path)
-        parser.parse()
-
-        def tensor_info(x):
-            cells = [
-                x.get('name', ''),
-                parser.TENSOR_TYPES.get(x.get('type', -1), 'UNKNOWN').replace("GGML_TYPE_", ''),
-                x.get('dimensions', ''),
-            ]
-
-            return '|' + '|'.join(str(x) for x in cells) + '|'
-
-        self.model_arch = parser.metadata.get('general.architecture', '*unknown*')
-        self.model_chat_template = parser.metadata.get('tokenizer.chat_template', '')
-        self.model_tensor_info = "| name | type | size |\n|---|---|---|\n" + "\n".join(tensor_info(x) for x in parser.tensors_info)
-        self.model_size = os.path.getsize(self.model_path)
-        self.model_param_count = sum(math.prod(x.get('dimensions', [0])) for x in parser.tensors_info)
-
-        self.write_down_template(parser)
-
-    def prepare_commandline_options(self):
-        permodel_opts_all = [x.partition(':') for x in shared.opts.llamacpp_cmdline_permodel.split('\n')]
-        permodel_opts = next((opts for model, _, opts in permodel_opts_all if model and model.lower() in self.model_name.lower()), '')
-
-        cmd = [shared.opts.llamacpp_exe, "-m", self.model_path, "--alias", os.path.splitext(os.path.basename(self.model_path))[0]] + shlex.split(permodel_opts.strip()) + shlex.split(shared.opts.llamacpp_cmdline.strip())
-
-        if shared.opts.llamacpp_port:
-            cmd += ["--port", shared.opts.llamacpp_port]
-
-        if shared.opts.llamacpp_host:
-            cmd += ["--host", shared.opts.llamacpp_host]
-
-        return cmd
-
-    def write_down_template(self, parser):
-        self.model_chat_template_example = ''
-
-        if not self.model_chat_template:
-            self.model_chat_template_markdown = "*Chat ttemplate missing!*"
-            return
-
-        tokens = parser.metadata.get('tokenizer.ggml.tokens', [])
-
-        def find_token(token_id):
-            return "" if token_id < 0 or token_id >= len(tokens) else tokens[token_id]
-
-        template_vars = {
-            'messages': [
-                {"role": "system", "content": "You are a helpful assistant"},
-                {"role": "user", "content": "What is 1+1?"},
-                {"role": "assistant", "content": "It's 2."},
-                {"role": "user", "content": "Thank you."},
-                {"role": "assistant", "content": "No problem."},
-            ],
-            "bos_token": find_token(parser.metadata.get('tokenizer.ggml.bos_token_id', -1)),
-            "eos_token": find_token(parser.metadata.get('tokenizer.ggml.eos_token_id', -1)),
-            "pad_token": find_token(parser.metadata.get('tokenizer.ggml.unknown_token_id', -1)),
-            "unk_token": find_token(parser.metadata.get('tokenizer.ggml.padding_token_id', -1)),
-        }
-
-        try:
-            try:
-                rendered = templating.render(self.model_chat_template, template_vars)
-            except Exception:
-                template_vars['messages'].pop(0)
-                rendered = templating.render(self.model_chat_template, template_vars)
-
-            self.model_chat_template_example = rendered
-            self.model_chat_template_markdown = "Example:\n```\n" + str(rendered) + "\n```\n\nFull chat template:\n```\n" + str(self.model_chat_template) + "\n```"
-        except Exception as e:
-            self.model_chat_template_markdown = f"Error rendering example: {e}\n\nFull chat template:\n```\n" + str(self.model_chat_template) + "\n```"
-
     def launch_at_startup(self):
-        if shared.opts.llamacpp_model and shared.opts.llamacpp_run_at_startup:
+        if shared.opts.model and shared.opts.run_at_startup:
             for _ in self.start_server():
                 pass
 
-    def stop_server(self, skip_check=False):
+    def status(self):
+        bknd = self.backend
+
+        if bknd is not None:
+            return bknd.server_status
+
+        return self.server_status
+
+    def runbusy(self, func, skip_check=False):
         if self.busy and not skip_check:
             gr.Warning('Already working!')
             return
 
         self.busy += 1
 
-        if self.server_process and self.server_process.poll() is None:
-            self.server_status = 'Stopping server...'
+        try:
+            yield from func()
+        except Exception as e:
+            errors.display(e, full_traceback=True)
+            yield f'❌ {e}'
+
+        self.busy -= 1
+
+    def stop_server(self):
+        bknd = self.backend
+
+        if bknd is not None:
+            self.server_status = 'Stopping...'
             yield self.server_status
 
-            os.kill(self.server_process.pid, signal.SIGTERM if os.name == 'nt' else signal.SIGKILL)
-            self.server_process.wait()
-            self.server_process = None
+            bknd.stop_server()
+            self.backend = None
 
         self.server_status = '✋🏻 Stopped by user.'
         yield self.server_status
 
-        self.busy -= 1
+    def stop_server_gradio(self):
+        yield from self.runbusy(self.stop_server)
 
     def start_server(self):
-        if not shared.opts.llamacpp_model:
+        model_label = shared.opts.model
+        model_info = models.models.get(model_label)
+        if model_info is None:
+            self.server_status = f'❌ Model not found: {model_label}'
+            yield self.server_status
+            return
+
+        yield from self.stop_server()
+
+        self.server_status = 'Starting server...'
+        yield self.server_status
+
+        self.backend = model_info.backend_type()
+        self.backend.model = model_info
+        self.backend.read_model_info()
+        self.backend.write_down_template()
+
+        yield from self.backend.start_server()
+
+    def start_server_gradio(self):
+        if not shared.opts.model:
             self.server_status = 'Model not selected.'
             yield self.server_status
             return
 
-        if self.busy:
-            gr.Warning('Already working!')
-            return
-
-        self.busy += 1
-        self.startup_log = ''
-        self.model_name = shared.opts.llamacpp_model
-        self.model_path = os.path.join(shared.opts.llamacpp_model_dir, self.model_name)
-
-        try:
-            self.read_model_info()
-
-            for _ in self.stop_server(skip_check=True):
-                pass
-
-            self.server_status = 'Starting server...'
-            yield self.server_status
-
-            cmd = self.prepare_commandline_options()
-            self.commandline = shlex.join(cmd)
-
-            self.server_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=1,
-                text=True,
-                errors='ignore',
-            )
-
-            self.server_reader = llamacpp_output_reader.Reader(self.server_process.stdout)
-
-            ready = False
-            start = time.time()
-
-            self.server_status = 'Waiting for server to start...'
-            yield self.server_status
-
-            while True:
-                try:
-                    line = self.server_reader.queue.get(timeout=0.2)
-                    if line:
-                        self.startup_log += line
-                        start = time.time()
-
-                        if "starting the main loop" in line:
-                            ready = True
-                            break
-
-                except queue.Empty:
-                    if self.server_process.poll() is not None:
-                        self.server_status = "❌ Server exited before it was ready."
-                        yield self.server_status
-                        self.busy -= 1
-                        return
-
-                if time.time() - start > shared.opts.llamacpp_startup_timeout:
-                    self.server_status = "❌ Timed out waiting for output from server."
-                    yield self.server_status
-                    self.startup_log += "\nTimed out."
-                    self.busy -= 1
-                    break
-
-            if not ready:
-                self.server_status = "❌ Failed to start."
-                yield self.server_status
-                self.busy -= 1
-                return
-
-            m = re.search(r'build: ([^ ]+) (\([^)]+\))', self.startup_log)
-            self.build_info = f'<b>{html.escape(m.group(1))}</b><br /><em>{m.group(2)}</em>' if m else '<em>unknown<em>'
-        except Exception as e:
-            errors.display(e, full_traceback=True)
-            self.server_status = f'❌ {e}. See log for more.'
-            self.busy -= 1
-            yield self.server_status
-
-        self.server_status = "✅ Ready!"
-        self.busy -= 1
-        yield self.server_status
+        yield from self.runbusy(self.start_server)
 
     def load_status(self):
         status = None
 
         while self.busy:
-            if status != self.server_status:
-                status = self.server_status
-                yield self.server_status
+            if status != self.status():
+                status = self.status()
+                yield status
 
             time.sleep(0.2)
 
-        yield self.server_status
+        yield self.status()
 
     def stats(self, current_value):
-        if not self.server_reader:
+        bknd = self.backend
+
+        if not bknd or not bknd.server_reader:
             return ""
 
-        tokens_generated = sum(x.tokens_generate for x in self.server_reader.requests)
-        tokens_processed = sum(x.tokens_process for x in self.server_reader.requests)
-        time_generating = sum(x.time_generate for x in self.server_reader.requests) / 1000
-        time_processing = sum(x.time_process for x in self.server_reader.requests) / 1000
+        reqs_generating = [x for x in bknd.server_reader.requests if x.time_generate is not None]
+        reqs_processing = [x for x in bknd.server_reader.requests if x.time_process is not None]
+
+        tokens_generated = sum(x.tokens_generate for x in reqs_generating)
+        tokens_processed = sum(x.tokens_process for x in reqs_processing)
+        time_generating = sum(x.time_generate for x in reqs_generating) / 1000
+        time_processing = sum(x.time_process for x in reqs_processing) / 1000
 
         if self.busy:
             loaded_model = "<em>Loading...</em>"
             build_info = '<em>Loading...</em>'
         else:
-            loaded_model = f"<b>{html.escape(self.model_name)}</b> <br />({html.escape(self.model_arch)}, {round((self.model_param_count or 0) / 1000000000)}B, {(self.model_size or 0) / 1024 / 1024 / 1024:.1f} GB)"
-            build_info = self.build_info
+            total_params = f"{round(bknd.model_param_count / 1000000000)}B, " if bknd.model_param_count is not None else ""
+            loaded_model = f"<b>{html.escape(bknd.model.path or '')}</b> <br />({html.escape(bknd.model_arch or '')}, {total_params}{(bknd.model_size or 0) / 1024 / 1024 / 1024:.1f} GB)"
+            build_info = bknd.build_info
 
         v = f"""
 <table class='stats'>
@@ -278,7 +151,7 @@ class LlamaServerLauncher:
             <span class='textstat'>{build_info}</span>
         </td>
         <td class='stat-requests'>
-            <span class='bigstat'>{len(self.server_reader.requests)}</span>
+            <span class='bigstat'>{len(bknd.server_reader.requests)}</span>
             <span class='bigstat-subtitle'>Requests</span>
         </td>
         <td class='stat-generated'>
@@ -310,11 +183,11 @@ class LlamaServerLauncher:
         with gr.Blocks(css_paths=['assets/style.css'], title="Llama.cpp launcher", js=js) as demo:
 
             with gr.Tabs():
-                with gr.Tab("Llama.cpp"):
+                with gr.Tab("Backend"):
 
                     with gr.Row():
                         with gr.Column(scale=6):
-                            settings_ui.render('llamacpp_model')
+                            settings_ui.render('model')
                         with gr.Column(scale=1, min_width=40):
                             stop = gr.Button("Stop", elem_classes=['aligned-to-label'])
                         with gr.Column(scale=1, min_width=50):
@@ -346,16 +219,25 @@ class LlamaServerLauncher:
                 with gr.Tab("Settings"):
                     settings_ui.create_ui(demo)
 
-            init_fields = dict(
-                fn=lambda: ['```\n' + self.startup_log + '\n```', self.model_chat_template_markdown, self.model_tensor_info, '```\n' + self.commandline + '\n```'],
-                outputs=[startup_log, chat_template, tensor_info, commandline]
-            )
+            def init_fields_func():
+                bknd = self.backend
+                if bknd is None:
+                    return ["", "", "", ""]
+
+                return  [
+                    f'```\n{bknd.startup_log}\n```',
+                    bknd.model_chat_template_markdown,
+                    bknd.model_tensor_info,
+                    f'```\n{bknd.commandline}\n```'
+                ]
+
+            init_fields = dict(fn=init_fields_func, outputs=[startup_log, chat_template, tensor_info, commandline])
 
             demo.load(fn=self.load_status, outputs=[status]).then(**init_fields)
             demo.load(**init_fields)
-            restart.click(fn=self.start_server, outputs=[status]).then(**init_fields)
+            restart.click(fn=self.start_server_gradio, outputs=[status]).then(**init_fields)
 
-            stop.click(fn=self.stop_server, outputs=[status]).then(**init_fields)
+            stop.click(fn=self.stop_server_gradio, outputs=[status]).then(**init_fields)
 
             refresh_system.click(fn=nvidia_smi, outputs=[nvidia_smi_view])
             demo.load(fn=nvidia_smi, outputs=[nvidia_smi_view])

@@ -226,9 +226,9 @@ class HuggingfaceDownloader:
                 parsed = urllib.parse.urlparse(file_url)
                 file_path = parsed.path.split(f'{model_id}/resolve/{revision}/')[-1]
                 if selection == -1:
-                    local_path = Path(shared.opts.llamacpp_model_dir) / model_id / file_path
+                    local_path = Path(shared.opts.model_dir) / model_id / file_path
                 else:
-                    local_path = Path(shared.opts.llamacpp_model_dir) / os.path.basename(file_path)
+                    local_path = Path(shared.opts.model_dir) / os.path.basename(file_path)
 
                 self.start_download_single(DownloadTask(
                     model_id=model_id,
