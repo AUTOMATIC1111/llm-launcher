@@ -70,7 +70,7 @@ class LlamaServerLauncher:
         permodel_opts_all = [x.partition(':') for x in shared.opts.llamacpp_cmdline_permodel.split('\n')]
         permodel_opts = next((opts for model, _, opts in permodel_opts_all if model and model.lower() in self.model_name.lower()), '')
 
-        cmd = [shared.opts.llamacpp_exe, "-m", self.model_path] + shlex.split(permodel_opts.strip()) + shlex.split(shared.opts.llamacpp_cmdline.strip())
+        cmd = [shared.opts.llamacpp_exe, "-m", self.model_path, "--alias", os.path.splitext(os.path.basename(self.model_path))[0]] + shlex.split(permodel_opts.strip()) + shlex.split(shared.opts.llamacpp_cmdline.strip())
 
         if shared.opts.llamacpp_port:
             cmd += ["--port", shared.opts.llamacpp_port]
