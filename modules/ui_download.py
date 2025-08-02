@@ -62,6 +62,9 @@ class Progress:
         return (end_done - start_done) / elapsed
 
     def percentage(self):
+        if not self.total:
+            return 0.0
+
         return self.done / self.total * 100
 
 
@@ -80,18 +83,23 @@ class DownloadTask:
     thread: threading.Thread = None
     stop: bool = False
     in_progress: bool = False
+    is_junk: bool = False
 
     def __post_init__(self):
         self.progress = Progress(total=self.total_size)
 
 
 class HuggingfaceDownloader:
+    VERIFY_CHUNK_SIZE = 0
+
     def __init__(self):
         self.downloads: list[DownloadTask] = []
         self.lock = threading.Lock()
 
     def get_downloads_html(self):
         htmls = []
+
+        cleanable = 0
 
         with self.lock:
             for task in self.downloads:
@@ -110,10 +118,23 @@ class HuggingfaceDownloader:
                     """
                 elif task.status == "completed":
                     status += f"— {format_file_size(task.progress.total)}"
+                    cleanable += 1
+                else:
+                    cleanable += 1
+
+                if task.in_progress:
+                    btn = "⏹"
+                    action = "Stop download"
+                elif task.is_junk:
+                    btn = "🗑"
+                    action = "Delete"
+                else:
+                    btn = "╳"
+                    action = "Remove entry from the list"
 
                 htmls += [f"""
                 <div class='download{" active" if task.in_progress else ""}'>
-                    <div class='cross' onclick='stopDownload("{html.escape(task.file_url, quote=True)}")' title='{"Stop download" if task.in_progress else "Remove entry from the list"}'>{'⏹' if task.in_progress else '╳'}</div>
+                    <div class='cross' onclick='stopDownload("{html.escape(task.file_url, quote=True)}")' title='{action}'>{btn}</div>
                     <div class='upper'>
                         {html.escape(task.local_path.name)}
                     </div>
@@ -126,7 +147,7 @@ class HuggingfaceDownloader:
                 </div>
                 """]
 
-        return "".join(htmls)
+        return "".join(htmls), gr.update(visible=cleanable>0)
 
     def list_files(self, model_id, revision):
         revision = revision or 'main'
@@ -150,50 +171,87 @@ class HuggingfaceDownloader:
         task.status = "preparing"
         task.in_progress = True
 
-        try:
-            task.local_path.parent.mkdir(parents=True, exist_ok=True)
+        errors = []
 
-            initial_size = task.local_path.stat().st_size if task.local_path.exists() else 0
-            task.progress.advance(initial_size)
+        while True:
+            if len(errors) >= 5 and time.time() - errors[0][0] < 10.0:
+                task.status = "failed"
+                task.error = errors[-1][1]
+                break
 
-            headers = {"Range": f"bytes={initial_size}-"} if initial_size else {}
-            if 0 < task.total_size <= initial_size:
-                task.status = "completed"
-                task.progress.finish()
-                return
+            try:
+                task.local_path.parent.mkdir(parents=True, exist_ok=True)
 
-            with requests.get(task.file_url, headers=headers, stream=True, timeout=10) as response:
-                response.raise_for_status()
+                initial_size = task.local_path.stat().st_size if task.local_path.exists() else 0
+                if initial_size > self.VERIFY_CHUNK_SIZE > 0:
+                    task.status = "verifying"
 
-                if task.total_size is None:
-                    task.total_size = int(response.headers.get('content-length', 0)) + initial_size
+                    verify_range_start = initial_size - self.VERIFY_CHUNK_SIZE
+                    verify_headers = {"Range": f"bytes={verify_range_start}-"}
 
-                task.start_time = time.time()
+                    with open(task.local_path, "rb") as f:
+                        f.seek(verify_range_start)
+                        local_chunk = f.read(self.VERIFY_CHUNK_SIZE)
 
-                task.status = "downloading"
+                    with requests.get(task.file_url, headers=verify_headers, stream=True, timeout=10) as response:
+                        response.raise_for_status()
 
-                with open(task.local_path, "ab") as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        if task.stop:
-                            break
-                        if chunk:
-                            f.write(chunk)
-                            with self.lock:
-                                task.progress.advance(len(chunk))
+                        remote_chunk = b''
+                        for chunk in response.iter_content(chunk_size=self.VERIFY_CHUNK_SIZE):
+                            remote_chunk = remote_chunk + chunk
+                            if len(remote_chunk) >= self.VERIFY_CHUNK_SIZE:
+                                break
 
-            if task.stop:
-                task.status = "canceled"
-                task.stop = False
-            else:
-                task.status = "completed"
-                task.progress.finish()
+                    remote_chunk = remote_chunk[0:self.VERIFY_CHUNK_SIZE]
 
-        except Exception as e:
-            task.status = "failed"
-            task.error = str(e)
-        finally:
-            task.in_progress = False
-            self.clean_threads()
+                    if remote_chunk != local_chunk:
+                        task.status = "failed"
+                        task.error = "data mismatch; can't resume"
+                        task.is_junk = True
+                        break
+
+                task.progress.advance(initial_size)
+
+                headers = {"Range": f"bytes={initial_size}-"} if initial_size else {}
+                if 0 < task.total_size <= initial_size:
+                    task.status = "completed"
+                    task.progress.finish()
+                    break
+
+                with requests.get(task.file_url, headers=headers, stream=True, timeout=10) as response:
+                    response.raise_for_status()
+
+                    if task.total_size is None:
+                        task.total_size = int(response.headers.get('content-length', 0)) + initial_size
+
+                    task.start_time = time.time()
+
+                    task.status = "downloading"
+
+                    with open(task.local_path, "ab") as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            if task.stop:
+                                break
+                            if chunk:
+                                f.write(chunk)
+                                with self.lock:
+                                    task.progress.advance(len(chunk))
+
+                if task.stop:
+                    task.status = "canceled"
+                    task.stop = False
+                else:
+                    task.status = "completed"
+                    task.progress.finish()
+
+                break
+            except Exception as e:
+                errors.append((time.time(), str(e)))
+                if len(errors) > 5:
+                    errors.pop(0)
+
+        task.in_progress = False
+        self.clean_threads()
 
     def clean_threads(self):
         with self.lock:
@@ -201,11 +259,6 @@ class HuggingfaceDownloader:
                 if task.thread is not None and not task.thread.is_alive():
                     task.thread.join()
                     task.thread = None
-
-    def start_download_single(self, task):
-        self.downloads.append(task)
-        task.thread = threading.Thread(target=self.download_worker, args=(task,))
-        task.thread.start()
 
     def start_download(self, file_data, selection):
         if selection == -1:
@@ -219,25 +272,30 @@ class HuggingfaceDownloader:
             with self.lock:
                 file_url = f"{base_url}/{model_id}/resolve/{revision}/{path}"
 
-                existing = any(x.file_url == file_url for x in self.downloads)
-                if existing:
-                    continue
-
-                parsed = urllib.parse.urlparse(file_url)
-                file_path = parsed.path.split(f'{model_id}/resolve/{revision}/')[-1]
-                if selection == -1:
-                    local_path = Path(shared.opts.model_dir) / model_id / file_path
+                task = next((x for x in self.downloads if x.file_url == file_url), None)
+                if task is not None:
+                    if task.status == "completed" or task.in_progress:
+                        continue
                 else:
-                    local_path = Path(shared.opts.model_dir) / os.path.basename(file_path)
+                    parsed = urllib.parse.urlparse(file_url)
+                    file_path = parsed.path.split(f'{model_id}/resolve/{revision}/')[-1]
+                    if selection == -1:
+                        local_path = Path(shared.opts.model_dir) / model_id.replace("/", '-') / file_path
+                    else:
+                        local_path = Path(shared.opts.model_dir) / os.path.basename(file_path)
 
-                self.start_download_single(DownloadTask(
-                    model_id=model_id,
-                    revision=revision,
-                    path=path,
-                    file_url=file_url,
-                    local_path=local_path,
-                    total_size=size,
-                ))
+                    task = DownloadTask(
+                        model_id=model_id,
+                        revision=revision,
+                        path=path,
+                        file_url=file_url,
+                        local_path=local_path,
+                        total_size=size,
+                    )
+                    self.downloads.append(task)
+
+                task.thread = threading.Thread(target=self.download_worker, args=(task,))
+                task.thread.start()
 
     def stop_download(self, url):
         with self.lock:
@@ -247,8 +305,17 @@ class HuggingfaceDownloader:
 
             if task.in_progress:
                 task.stop = True
+            elif task.is_junk:
+                os.unlink(task.local_path)
+                self.downloads.remove(task)
             else:
                 self.downloads.remove(task)
+
+    def do_cleanup(self):
+        with self.lock:
+            for i in reversed(range(len(self.downloads))):
+                if not self.downloads[i].in_progress:
+                    self.downloads.pop(i)
 
     def create_ui(self, demo):
         with gr.Row():
@@ -268,16 +335,18 @@ class HuggingfaceDownloader:
                     file_data = gr.JSON(visible=False)
 
             with gr.Column():
+                cleanup = gr.Button("Clean up", variant="secondary", visible=False)
                 downloads_panel = gr.HTML('', elem_classes=['downloads'])
 
         stop_btn = gr.Button("Stop", visible=False, elem_id='stop_download')
         refresh_btn = gr.Button("Refresh", visible=False, elem_id='refresh_downloads')
 
-        update_download_list = dict(fn=self.get_downloads_html, inputs=[], outputs=[downloads_panel], show_progress='hidden')
+        update_download_list = dict(fn=self.get_downloads_html, inputs=[], outputs=[downloads_panel, cleanup], show_progress='hidden')
 
         list_files.click(self.list_files, inputs=[model_id, revision], outputs=[file_selection, file_data, download_btn])
         download_btn.click(self.start_download, inputs=[file_data, file_selection]).then(**update_download_list)
         stop_btn.click(fn=self.stop_download, inputs=[stop_btn], js="getTargetForStopDownload").then(**update_download_list)
+        cleanup.click(fn=self.do_cleanup).then(**update_download_list)
 
         refresh_btn.click(**update_download_list)
         demo.load(**update_download_list)

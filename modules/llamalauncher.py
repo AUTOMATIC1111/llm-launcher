@@ -84,8 +84,16 @@ class LlamaServerLauncher:
 
         self.backend = model_info.backend_type()
         self.backend.model = model_info
-        self.backend.read_model_info()
-        self.backend.write_down_template()
+
+        try:
+            self.backend.read_model_info()
+        except Exception as e:
+            errors.display(e, full_traceback=True)
+
+        try:
+            self.backend.write_down_template()
+        except Exception as e:
+            errors.display(e, full_traceback=True)
 
         yield from self.backend.start_server()
 
