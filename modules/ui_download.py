@@ -1,3 +1,4 @@
+import collections
 import dataclasses
 import html
 import os
@@ -31,7 +32,7 @@ def format_file_size(size_bytes):
 class Progress:
     total: int
     done: int = 0
-    history: list[tuple] = dataclasses.field(default_factory=list)
+    history: collections.deque = dataclasses.field(default_factory=lambda: collections.deque(maxlen=100))
     history_length: int = 3
 
     def advance(self, add):
@@ -48,12 +49,16 @@ class Progress:
         cutoff = now - self.history_length
 
         while self.history and self.history[0][0] < cutoff:
-            self.history.pop(0)
+            self.history.popleft()
+
+        if not self.history:
+            return 0
 
         self.history.append((now, self.done))
 
         start, start_done = self.history[0]
         end, end_done = self.history[-1]
+
         elapsed = end - start
 
         if elapsed == 0:
@@ -238,8 +243,7 @@ class HuggingfaceDownloader:
                                 break
                             if chunk:
                                 f.write(chunk)
-                                with self.lock:
-                                    task.progress.advance(len(chunk))
+                                task.progress.advance(len(chunk))
 
                 if task.stop:
                     task.status = "canceled"
@@ -346,10 +350,10 @@ class HuggingfaceDownloader:
                     download_btn = gr.Button("Download", variant="primary", interactive=False)
 
                 with gr.Row():
-                    with gr.Column(scale=6):
+                    with gr.Column(scale=4):
                         model_id = gr.Textbox(label="Model ID", placeholder="username/model-name")
                     with gr.Column(scale=1, min_width=60):
-                        revision = gr.Textbox(label="Revision", placeholder="main", value="", min_width=60)
+                        revision = gr.Textbox(label="Revision", placeholder="main", value="", min_width=100)
 
                 with gr.Row():
                     file_selection = gr.Dropdown(label="File", choices=[])
