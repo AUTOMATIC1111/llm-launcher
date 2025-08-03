@@ -151,7 +151,7 @@ class HuggingfaceDownloader:
 
     def list_files(self, model_id, revision):
         revision = revision or 'main'
-        api_url = f"{base_url}/api/models/{model_id}/tree/{revision}"
+        api_url = f"{base_url}/api/models/{model_id}/tree/{revision}?recursive=true"
         try:
             response = requests.get(api_url, timeout=10)
             response.raise_for_status()
@@ -160,12 +160,16 @@ class HuggingfaceDownloader:
             gr.Warning(f'{e}')
             return gr.update(choices=[], value=None), [], gr.update(interactive=False)
 
+        total_size = 0
+
         for item in items:
             item['model_id'] = model_id
             item['revision'] = revision
+            total_size += item['size']
 
-        choices = [('All files', -1), *[(item.get("path"), i) for i, item in enumerate(items)]]
-        return gr.update(choices=choices, value=-1), items, gr.update(interactive=True)
+        all_files = (f"All files [{format_file_size(total_size)}]", -1)
+        choices = [(f"{item.get('path')} [{format_file_size(item.get('size', 0))}]", i) for i, item in enumerate(items)]
+        return gr.update(choices=[all_files, *choices], value=-1), items, gr.update(interactive=True)
 
     def download_worker(self, task: DownloadTask):
         task.status = "preparing"
@@ -260,7 +264,10 @@ class HuggingfaceDownloader:
                     task.thread.join()
                     task.thread = None
 
-    def start_download(self, file_data, selection):
+    def start_download(self, file_data, selection, destination_filename):
+        if not destination_filename:
+            destination_filename = self.autocalc_filename(file_data, selection)
+
         if selection == -1:
             to_download = file_data
         else:
@@ -277,12 +284,12 @@ class HuggingfaceDownloader:
                     if task.status == "completed" or task.in_progress:
                         continue
                 else:
-                    parsed = urllib.parse.urlparse(file_url)
-                    file_path = parsed.path.split(f'{model_id}/resolve/{revision}/')[-1]
                     if selection == -1:
-                        local_path = Path(shared.opts.model_dir) / model_id.replace("/", '-') / file_path
+                        parsed = urllib.parse.urlparse(file_url)
+                        file_path = parsed.path.split(f'{model_id}/resolve/{revision}/')[-1]
+                        local_path = Path(shared.opts.model_dir) / destination_filename / file_path
                     else:
-                        local_path = Path(shared.opts.model_dir) / os.path.basename(file_path)
+                        local_path = Path(shared.opts.model_dir) / destination_filename
 
                     task = DownloadTask(
                         model_id=model_id,
@@ -317,6 +324,20 @@ class HuggingfaceDownloader:
                 if not self.downloads[i].in_progress:
                     self.downloads.pop(i)
 
+    def autocalc_filename(self, file_data, selection):
+        if not file_data:
+            return None
+
+        d = file_data[0] if selection == -1 else file_data[selection]
+
+        if selection == -1:
+            rev = d.get("revision")
+            return d["model_id"].replace("/", "-") + ("-" + rev if rev not in ('', 'main', 'master') else "")
+        else:
+            modelname_part = d["model_id"].split("/")[0]
+            filename_part = d["path"].split("/")[-1]
+            return f"{modelname_part}-{filename_part}"
+
     def create_ui(self, demo):
         with gr.Row():
             with gr.Column():
@@ -334,6 +355,9 @@ class HuggingfaceDownloader:
                     file_selection = gr.Dropdown(label="File", choices=[])
                     file_data = gr.JSON(visible=False)
 
+                with gr.Row():
+                    destination_filename = gr.Text(label="Destination filename")
+
             with gr.Column():
                 cleanup = gr.Button("Clean up", variant="secondary", visible=False)
                 downloads_panel = gr.HTML('', elem_classes=['downloads'])
@@ -342,11 +366,14 @@ class HuggingfaceDownloader:
         refresh_btn = gr.Button("Refresh", visible=False, elem_id='refresh_downloads')
 
         update_download_list = dict(fn=self.get_downloads_html, inputs=[], outputs=[downloads_panel, cleanup], show_progress='hidden')
+        update_filename_placeholder_args = dict(fn=lambda file_data, selection: gr.update(placeholder=self.autocalc_filename(file_data, selection) or ''), inputs=[file_data, file_selection], outputs=[destination_filename], show_progress='hidden')
 
-        list_files.click(self.list_files, inputs=[model_id, revision], outputs=[file_selection, file_data, download_btn])
-        download_btn.click(self.start_download, inputs=[file_data, file_selection]).then(**update_download_list)
+        list_files.click(self.list_files, inputs=[model_id, revision], outputs=[file_selection, file_data, download_btn]).then(**update_filename_placeholder_args)
+        download_btn.click(self.start_download, inputs=[file_data, file_selection, destination_filename]).then(**update_download_list)
         stop_btn.click(fn=self.stop_download, inputs=[stop_btn], js="getTargetForStopDownload").then(**update_download_list)
         cleanup.click(fn=self.do_cleanup).then(**update_download_list)
+
+        file_selection.change(**update_filename_placeholder_args)
 
         refresh_btn.click(**update_download_list)
         demo.load(**update_download_list)
