@@ -6,7 +6,7 @@ general = settings.Section('General')
 llamacpp = settings.Section('Llama.cpp')
 tabbyapi = settings.Section('TabbyAPI')
 
-temlates = [
+templates = [
     settings.Template(general, "model_dir", '', "Model directory"),
     settings.Template(general, "model", None, "Selected model", gr.Dropdown, lambda: {"choices": shared_options_funcs.list_models(), "allow_custom_value": False}, refresh=shared_options_funcs.list_models),
     settings.Template(general, "run_at_startup", True, "Run the backend at startup", gr.Checkbox),

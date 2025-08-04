@@ -6,6 +6,7 @@ import subprocess
 import os
 
 from modules import shared, errors, ui_download, backend, models
+from modules import userscripts
 
 
 def nvidia_smi():
@@ -24,6 +25,9 @@ class LlmLauncher:
 
         self.downloader = ui_download.HuggingfaceDownloader()
         self.busy = 0
+
+        for func in userscripts.on_app_init:
+            func(self)
 
     def launch_at_startup(self):
         if shared.opts.model and shared.opts.run_at_startup:
@@ -193,6 +197,8 @@ class LlmLauncher:
         """
 
         with gr.Blocks(css_paths=['assets/style.css'], title="Llama.cpp launcher", js=js) as demo:
+            for func in userscripts.on_app_ui:
+                func(self)
 
             with gr.Tabs():
                 with gr.Tab("Backend"):
