@@ -3,6 +3,7 @@ import queue
 import shlex
 import signal
 import subprocess
+import threading
 import time
 
 from modules import templating, models, shared
@@ -14,7 +15,6 @@ class BackendBase:
     def __init__(self):
         self.server_process = None
         self.server_reader = None
-        self.server_status: str = "In limbo"
         self.chdir = None
 
         self.model: models.ModelInfo = None
@@ -31,6 +31,10 @@ class BackendBase:
         self.build_info = None
         self.access_url = None
 
+        self.over = False
+        self.ready = False
+        self.server_thread = None
+        self.status_message: str = None
         self.startup_log = ''
         self.commandline = ''
 
@@ -49,7 +53,12 @@ class BackendBase:
     def read_model_info(self):
         raise NotImplementedError()
 
+    def status(self, message):
+        self.status_message = message
+
     def start_server(self):
+        self.ready = False
+
         cmd = self.cmd()
 
         self.commandline = shlex.join(cmd)
@@ -69,8 +78,7 @@ class BackendBase:
         ready = False
         start = time.time()
 
-        self.server_status = 'Waiting for server to start...'
-        yield self.server_status
+        self.status('Waiting for server to start...')
 
         while True:
             try:
@@ -85,14 +93,14 @@ class BackendBase:
 
             except queue.Empty:
                 if self.server_process.poll() is not None:
-                    self.server_status = "❌ Server exited before it was ready."
-                    yield self.server_status
+                    self.status("❌ Server exited before it was ready.")
+                    self.over = True
                     break
 
             if time.time() - start > shared.opts.backend_startup_timeout:
-                self.server_status = "❌ Timed out waiting for output from server."
-                yield self.server_status
+                self.status("❌ Timed out waiting for output from server.")
                 self.startup_log += "\nTimed out."
+                self.over = True
                 break
 
         if not ready:
@@ -101,19 +109,45 @@ class BackendBase:
         self.process_startup_log()
 
         if self.access_url is not None:
-            self.server_status = f"✅ Listening on {self.access_url}"
+            self.status(f"✅ Listening on {self.access_url}")
         else:
-            self.server_status = "✅ Ready!"
+            self.status("✅ Ready!")
 
-        yield self.server_status
+        self.ready = True
+
+    def run(self):
+        if self.server_thread is not None:
+            return
+
+        self.status("Launching server process.")
+        self.server_thread = threading.Thread(target=self.server_thread_main, daemon=True)
+        self.server_thread.start()
+
+    def server_thread_main(self):
+        while not self.over:
+            self.start_server()
+
+            while True:
+                code = self.server_process.poll()
+
+                if code is not None:
+                    break
+
+                time.sleep(1)
+
+            self.ready = False
+            self.status(f"Server process exited with code {code}; {'quitting' if self.over else 'restarting'}")
+
+        self.server_process = None
 
     def stop_server(self):
+        self.over = True
+
         if self.server_process and self.server_process.poll() is None:
-            self.server_status = 'Stopping server...'
+            self.status('Stopping server...')
 
             os.kill(self.server_process.pid, signal.SIGTERM if os.name == 'nt' else signal.SIGKILL)
             self.server_process.wait()
-            self.server_process = None
 
     def sample_messages(self):
         return [

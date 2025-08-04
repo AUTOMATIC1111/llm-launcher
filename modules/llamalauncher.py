@@ -33,8 +33,8 @@ class LlamaServerLauncher:
     def status(self):
         bknd = self.backend
 
-        if bknd is not None:
-            return bknd.server_status
+        if bknd is not None and bknd.status_message is not None:
+            return bknd.status_message
 
         return self.server_status
 
@@ -79,23 +79,26 @@ class LlamaServerLauncher:
 
         yield from self.stop_server()
 
-        self.server_status = 'Starting server...'
+        bknd = model_info.backend_type()
+        self.backend = bknd
+        bknd.model = model_info
+
+        self.server_status = 'Reading model info...'
         yield self.server_status
-
-        self.backend = model_info.backend_type()
-        self.backend.model = model_info
-
         try:
-            self.backend.read_model_info()
+            bknd.read_model_info()
         except Exception as e:
             errors.display(e, full_traceback=True)
 
+        self.server_status = 'Writing down template...'
+        yield self.server_status
         try:
-            self.backend.write_down_template()
+            bknd.write_down_template()
         except Exception as e:
             errors.display(e, full_traceback=True)
 
-        yield from self.backend.start_server()
+        bknd.run()
+        yield bknd.status_message
 
     def start_server_gradio(self):
         if not shared.opts.model:
@@ -121,7 +124,7 @@ class LlamaServerLauncher:
         bknd = self.backend
 
         if not bknd or not bknd.server_reader:
-            return ""
+            return "", self.status(), gr.update(visible=True), gr.update(visible=False), gr.update(visible=False)
 
         reqs_generating = [x for x in bknd.server_reader.requests if x.time_generate is not None]
         reqs_processing = [x for x in bknd.server_reader.requests if x.time_process is not None]
@@ -177,7 +180,8 @@ class LlamaServerLauncher:
 </table>
 """.strip()
 
-        return v if v != current_value else gr.update()
+        is_running = not bknd.over
+        return (v if v != current_value else gr.update()), self.status(), gr.update(visible=not is_running), gr.update(visible=is_running), gr.update(visible=is_running)
 
     def create_ui(self, settings_ui):
         js = """
@@ -196,13 +200,14 @@ class LlamaServerLauncher:
                     with gr.Row():
                         with gr.Column(scale=6):
                             settings_ui.render('model')
-                        with gr.Column(scale=1, min_width=40):
-                            stop = gr.Button("Stop", elem_classes=['aligned-to-label'])
-                        with gr.Column(scale=1, min_width=50):
-                            restart = gr.Button("Start", elem_classes=['aligned-to-label'], variant="primary")
+                        with gr.Column(scale=2, min_width=100):
+                            with gr.Row():
+                                start = gr.Button("Start", elem_classes=['aligned-to-label'], variant="primary", min_width=40, visible=False)
+                                restart = gr.Button("Restart", elem_classes=['aligned-to-label'], variant="primary", min_width=40, visible=False)
+                                stop = gr.Button("Stop", elem_classes=['aligned-to-label'], min_width=40, visible=False)
 
-                    stats = gr.HTML(value='', elem_classes=['no-flicker', 'compact'])
                     status = gr.Markdown(value='*Loading...*', elem_classes=['status'])
+                    stats = gr.HTML(value='', elem_classes=['no-flicker', 'compact'])
 
                 with gr.Tab("Download"):
                     self.downloader.create_ui(demo)
@@ -232,25 +237,27 @@ class LlamaServerLauncher:
                 if bknd is None:
                     return ["", "", "", ""]
 
-                return  [
+                return [
                     f'```\n{bknd.startup_log}\n```',
                     bknd.model_chat_template_markdown,
                     bknd.model_tensor_info,
                     f'```\n{bknd.commandline}\n```'
                 ]
 
-            init_fields = dict(fn=init_fields_func, outputs=[startup_log, chat_template, tensor_info, commandline])
+            get_info = dict(fn=init_fields_func, outputs=[startup_log, chat_template, tensor_info, commandline], show_progress="hidden")
+            get_stats = dict(fn=self.stats, inputs=[stats], outputs=[stats, status, start, stop, restart], show_progress="hidden")
+            disable_buttons = dict(fn=lambda: [gr.update(interactive=False) for _ in range(3)], outputs=[start, stop, restart])
+            enable_buttons = dict(fn=lambda: [gr.update(interactive=True) for _ in range(3)], outputs=[start, stop, restart])
 
-            demo.load(fn=self.load_status, outputs=[status]).then(**init_fields)
-            demo.load(**init_fields)
-            restart.click(fn=self.start_server_gradio, outputs=[status]).then(**init_fields)
-
-            stop.click(fn=self.stop_server_gradio, outputs=[status]).then(**init_fields)
+            demo.load(api_name="get_info", **get_info)
+            start.click(**disable_buttons).then(fn=self.start_server_gradio, outputs=[status], show_progress="hidden").then(**enable_buttons).then(**get_info)
+            restart.click(**disable_buttons).then(fn=self.start_server_gradio, outputs=[status], show_progress="hidden").then(**enable_buttons).then(**get_info)
+            stop.click(**disable_buttons).then(fn=self.stop_server_gradio, outputs=[status], show_progress="hidden").then(**enable_buttons).then(**get_info)
 
             refresh_system.click(fn=nvidia_smi, outputs=[nvidia_smi_view])
             demo.load(fn=nvidia_smi, outputs=[nvidia_smi_view])
 
-            gr.Timer(1).tick(api_name="update_stats_timer", fn=self.stats, inputs=[stats], outputs=[stats], show_progress="hidden")
-            demo.load(api_name="update_stats_load", fn=self.stats, inputs=[stats], outputs=[stats], show_progress="hidden")
+            gr.Timer(1).tick(**get_stats)
+            demo.load(api_name="get_stats", **get_stats)
 
         return demo
