@@ -17,7 +17,7 @@ def nvidia_smi():
     return '```\n' + subprocess.check_output(command, shell=True).decode('utf8', errors='ignore') + '\n```'
 
 
-class LlamaServerLauncher:
+class LlmLauncher:
     def __init__(self):
         self.server_status = "Not started"
         self.backend: backend.BackendBase = None

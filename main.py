@@ -1,4 +1,4 @@
-from modules import settings, shared, shared_options, llamalauncher, cmd_args
+from modules import settings, shared, shared_options, ui_main, cmd_args
 
 
 def main():
@@ -7,7 +7,7 @@ def main():
     shared.opts = settings.Settings(shared_options.temlates)
     settings_ui = settings.SettingsUi(shared.opts, shared.args.config)
 
-    launcher = llamalauncher.LlamaServerLauncher()
+    launcher = ui_main.LlmLauncher()
     ui = launcher.create_ui(settings_ui)
 
     ui.queue(default_concurrency_limit=10).launch(prevent_thread_lock=True, favicon_path="assets/favicon.png", allowed_paths=["assets"])
