@@ -11,6 +11,7 @@ templates = [
     settings.Template(general, "model", None, "Selected model", gr.Dropdown, lambda: {"choices": shared_options_funcs.list_models(), "allow_custom_value": False}, refresh=shared_options_funcs.list_models),
     settings.Template(general, "run_at_startup", True, "Run the backend at startup", gr.Checkbox),
     settings.Template(general, "backend_startup_timeout", 30, "Startup inactivity detection timeout", gr.Number),
+    settings.Template(general, "read_tensor_info", False, "Read model metadata before starting the backend", gr.Checkbox),
 
     settings.Template(llamacpp, "llamacpp_exe", 'llama-server', "Llamacpp executable"),
     settings.Template(llamacpp, "llamacpp_port", '8080', "Port for llamacpp to listen on"),

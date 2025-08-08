@@ -70,6 +70,9 @@ class BackendTabbyapi(backend.BackendBase):
         total_size = 0
 
         for root, _, files in os.walk(model_dir):
+            if not shared.opts.read_tensor_info:
+                break
+
             for filename in files:
                 filepath = os.path.join(root, filename)
                 total_size += os.path.getsize(filepath)
