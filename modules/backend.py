@@ -37,6 +37,7 @@ class BackendBase:
         self.status_message: str = None
         self.startup_log = ''
         self.commandline = ''
+        self.extra_paths = None
 
     def cmd(self) -> list[str]:
         raise NotImplementedError()
@@ -61,6 +62,10 @@ class BackendBase:
 
         cmd = self.cmd()
 
+        env = {**os.environ, **dict(COLUMNS="9999")}
+        if self.extra_paths:
+            env["PATH"] = os.pathsep.join(self.extra_paths) + os.pathsep + os.environ.get("PATH", "")
+
         self.commandline = shlex.join(cmd)
         self.server_process = subprocess.Popen(
             cmd,
@@ -70,7 +75,7 @@ class BackendBase:
             bufsize=1,
             text=True,
             errors='ignore',
-            env={**os.environ, **dict(COLUMNS="9999")},
+            env=env,
         )
 
         self.server_reader = self.create_server_reader()

@@ -201,4 +201,6 @@ class BackendTabbyapi(backend.BackendBase):
         if shared.opts.tabbyapi_host:
             cmd += ["--host", shared.opts.tabbyapi_host]
 
+        self.extra_paths = [os.path.dirname(python_path)]
+
         return cmd
