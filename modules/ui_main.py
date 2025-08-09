@@ -250,14 +250,28 @@ class LlmLauncher:
                     f'```\n{bknd.commandline}\n```'
                 ]
 
+            def wait_for_backend_func():
+                while True:
+                    time.sleep(1)
+
+                    bknd = self.backend
+                    if bknd is None:
+                        continue
+
+                    yield f'```\n{bknd.startup_log}\n```'
+
+                    if bknd.ready or bknd.over:
+                        break
+
+            wait_for_backend = dict(fn=wait_for_backend_func, inputs=[], outputs=[startup_log], show_progress="hidden")
             get_info = dict(fn=init_fields_func, outputs=[startup_log, chat_template, tensor_info, commandline], show_progress="hidden")
             get_stats = dict(fn=self.stats, inputs=[stats], outputs=[stats, status, start, stop, restart], show_progress="hidden")
             disable_buttons = dict(fn=lambda: [gr.update(interactive=False) for _ in range(3)], outputs=[start, stop, restart])
             enable_buttons = dict(fn=lambda: [gr.update(interactive=True) for _ in range(3)], outputs=[start, stop, restart])
 
             demo.load(api_name="get_info", **get_info)
-            start.click(**disable_buttons).then(fn=self.start_server_gradio, outputs=[status], show_progress="hidden").then(**enable_buttons).then(**get_info)
-            restart.click(**disable_buttons).then(fn=self.start_server_gradio, outputs=[status], show_progress="hidden").then(**enable_buttons).then(**get_info)
+            start.click(**disable_buttons).then(fn=self.start_server_gradio, outputs=[status], show_progress="hidden").then(**enable_buttons).then(**get_info).then(**wait_for_backend)
+            restart.click(**disable_buttons).then(fn=self.start_server_gradio, outputs=[status], show_progress="hidden").then(**enable_buttons).then(**get_info).then(**wait_for_backend)
             stop.click(**disable_buttons).then(fn=self.stop_server_gradio, outputs=[status], show_progress="hidden").then(**enable_buttons).then(**get_info)
 
             refresh_system.click(fn=nvidia_smi, outputs=[nvidia_smi_view])
