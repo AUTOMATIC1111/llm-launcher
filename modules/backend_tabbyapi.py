@@ -5,8 +5,6 @@ import os
 import re
 import shlex
 
-import safetensors
-
 from modules import backend, shared, output_reader_tabbyapi, utils, errors
 
 
@@ -17,6 +15,36 @@ def typesize(typename):
         return None
 
     return int(m.group(0))
+
+
+def read_metadata_from_safetensors(filename):
+    import json
+
+    with open(filename, mode="rb") as file:
+        metadata_len = file.read(8)
+        metadata_len = int.from_bytes(metadata_len, "little")
+        json_start = file.read(2)
+
+        assert metadata_len > 2 and json_start in (b'{"', b"{'"), f"{filename} is not a safetensors file"
+
+        metadata = {}
+        res = {}
+
+        try:
+            json_data = json_start + file.read(metadata_len-2)
+            res = json.loads(json_data)
+            for k, v in res.get("__metadata__", {}).items():
+                metadata[k] = v
+                if isinstance(v, str) and v[0:1] == '{':
+                    try:
+                        metadata[k] = json.loads(v)
+                    except Exception:
+                        pass
+            res["__metadata__"] = metadata
+        except Exception:
+            errors.report(f"Error reading metadata from file: {filename}", exc_info=True)
+
+        return res
 
 
 class BackendTabbyapi(backend.BackendBase):
@@ -70,9 +98,6 @@ class BackendTabbyapi(backend.BackendBase):
         total_size = 0
 
         for root, _, files in os.walk(model_dir):
-            if not shared.opts.read_tensor_info:
-                break
-
             for filename in files:
                 filepath = os.path.join(root, filename)
                 total_size += os.path.getsize(filepath)
@@ -81,12 +106,13 @@ class BackendTabbyapi(backend.BackendBase):
                     continue
 
                 try:
-                    with safetensors.safe_open(filepath, framework="numpy", device="cpu") as f:
-                        for key in f.keys():
-                            tensor_metadata = f.get_tensor(key)
-                            dims = list(tensor_metadata.shape)
-                            dtype_str = str(tensor_metadata.dtype).replace('torch.', '')
+                    metadata = read_metadata_from_safetensors(filepath)
 
+                    for key, v in metadata.items():
+                        dims = v.get('shape', ())
+                        dtype_str = v.get('dtype', '')
+
+                        if dims and dtype_str:
                             tensors_info[key] = {
                                 'type': dtype_str,
                                 'dimensions': dims
